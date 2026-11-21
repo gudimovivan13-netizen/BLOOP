@@ -1,0 +1,21 @@
+{
+  "name": "bloop",
+  "version": "1.0.0",
+  "description": "BLOOP — веб-мессенджер в реальном времени (Node.js + Express + Socket.IO + SQLite)",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "smoke": "node test/smoke-test.mjs"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.1"
+  }
+}

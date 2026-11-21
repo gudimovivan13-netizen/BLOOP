@@ -1,0 +1,194 @@
+// Интеграционный smoke-тест BLOOP: поднимает сервер, проверяет
+// регистрацию, чаты, доставку по WebSocket, присутствие и картинки.
+// Запуск: npm run smoke
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import fs from 'node:fs';
+import { io } from 'socket.io-client';
+
+const PORT = 3107;
+const BASE = `http://localhost:${PORT}`;
+const DATA_DIR = path.join(process.cwd(), 'data-test');
+
+let failures = 0;
+
+function check(name, cond, extra = '') {
+  if (cond) {
+    console.log(`  PASS  ${name}`);
+  } else {
+    failures++;
+    console.error(`  FAIL  ${name} ${extra}`);
+  }
+}
+
+async function api(path, { method = 'GET', body, token: t } = {}) {
+  const res = await fetch(BASE + path, {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(t ? { Authorization: `Bearer ${t}` } : {}),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { status: res.status, data };
+}
+
+function connectSocket(token) {
+  return new Promise((resolve, reject) => {
+    const s = io(BASE, { auth: { token } });
+    s.once('connect', () => resolve(s));
+    s.once('connect_error', reject);
+    setTimeout(() => reject(new Error('socket timeout')), 5000);
+  });
+}
+
+function waitForEvent(socket, event, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no ${event} in ${timeoutMs}ms`)), timeoutMs);
+    socket.once(event, (payload) => {
+      clearTimeout(timer);
+      resolve(payload);
+    });
+  });
+}
+
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+async function main() {
+  fs.rmSync(DATA_DIR, { recursive: true, force: true });
+  const server = spawn(process.execPath, ['server.js'], {
+    env: { ...process.env, PORT: String(PORT), BLOOP_DATA_DIR: DATA_DIR },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  server.stdout.on('data', d => process.stdout.write(`[server] ${d}`));
+  server.stderr.on('data', d => process.stderr.write(`[server] ${d}`));
+
+  try {
+    // ждём готовности сервера
+    for (let i = 0; i < 40; i++) {
+      try { await fetch(BASE); break; } catch { await sleep(150); }
+    }
+
+    const suffix = Date.now().toString(36);
+    const aliceName = `alice_${suffix}`;
+    const bobName = `bob_${suffix}`;
+
+    console.log('\n— Регистрация и вход');
+    const regBad = await api('/api/register', { method: 'POST', body: { username: 'x', password: '123' } });
+    check('короткий логин отклоняется', regBad.status === 400);
+
+    const regA = await api('/api/register', { method: 'POST', body: { username: aliceName, password: 'secret1', display_name: 'Алиса' } });
+    check('регистрация Алисы', regA.status === 200 && regA.data.token);
+    const regB = await api('/api/register', { method: 'POST', body: { username: bobName, password: 'secret2', display_name: 'Боб' } });
+    check('регистрация Боба', regB.status === 200 && regB.data.token);
+
+    const dup = await api('/api/register', { method: 'POST', body: { username: aliceName, password: 'secret1' } });
+    check('дубликат логина отклоняется', dup.status === 409);
+
+    const badLogin = await api('/api/login', { method: 'POST', body: { username: aliceName, password: 'wrong' } });
+    check('неверный пароль отклоняется', badLogin.status === 401);
+
+    const tokA = regA.data.token, tokB = regB.data.token;
+    const meA = await api('/api/me', { token: tokA });
+    check('/api/me возвращает Алису', meA.data.user?.display_name === 'Алиса');
+
+    console.log('\n— Пользователи и чаты');
+    const users = await api('/api/users', { token: tokA });
+    const bob = users.data.users.find(u => u.username === bobName);
+    check('Боб виден в списке пользователей', !!bob);
+
+    const chat1 = await api('/api/chats', { method: 'POST', token: tokA, body: { type: 'direct', user_id: bob.id } });
+    check('личный чат создан', chat1.status === 200 && chat1.data.chat_id);
+    const chat2 = await api('/api/chats', { method: 'POST', token: tokB, body: { type: 'direct', user_id: meA.data.user.id } });
+    check('повторное открытие того же чата дедуплицируется', chat2.data.chat_id === chat1.data.chat_id && chat2.data.existed === true);
+
+    console.log('\n— WebSocket и доставка');
+    const sockA = await connectSocket(tokA);
+    // вешаем слушатели ДО подключения Боба, иначе пропустим события
+    const presPromise = waitForEvent(sockA, 'presence');
+    const sockB = await connectSocket(tokB);
+    check('оба сокета подключились', sockA.connected && sockB.connected);
+
+    const presB = await presPromise.catch(() => null);
+    check('Алиса видит онлайн-статус Боба', presB?.user_id === bob.id && presB?.online === true);
+
+    const msgPromise = waitForEvent(sockB, 'message');
+    const send = await api(`/api/chats/${chat1.data.chat_id}/messages`, { method: 'POST', token: tokA, body: { text: 'Привет, Боб!' } });
+    check('сообщение отправлено по REST', send.status === 200 && send.data.message?.text === 'Привет, Боб!');
+    const received = await msgPromise.catch(() => null);
+    check('Боб получил сообщение через WebSocket', received?.text === 'Привет, Боб!');
+
+    const chatListB = await api('/api/chats', { token: tokB });
+    const chatB = chatListB.data.chats.find(c => c.id === chat1.data.chat_id);
+    check('у Боба непрочитанное = 1', chatB?.unread === 1);
+    check('последнее сообщение виднеется в списке', chatB?.last_message?.text === 'Привет, Боб!');
+
+    await api(`/api/chats/${chat1.data.chat_id}/read`, { method: 'POST', token: tokB, body: { message_id: received.id } });
+    const chatListB2 = await api('/api/chats', { token: tokB });
+    check('после прочтения непрочитанное = 0',
+      chatListB2.data.chats.find(c => c.id === chat1.data.chat_id)?.unread === 0);
+
+    const typing = waitForEvent(sockB, 'typing');
+    sockA.emit('typing', { chat_id: chat1.data.chat_id, typing: true });
+    const typed = await typing.catch(() => null);
+    check('индикатор набора доставляется', typed?.typing === true);
+
+    console.log('\n— Групповой чат');
+    const chatNewPromise = waitForEvent(sockB, 'chat:new'); // слушаем до создания
+    const group = await api('/api/chats', { method: 'POST', token: tokA, body: { type: 'group', name: 'BLOOP team', member_ids: [bob.id] } });
+    check('группа создана', group.status === 200 && group.data.chat_id);
+    const chatNew = await chatNewPromise.catch(() => null);
+    check('Боб получил событие о новом чате', chatNew?.chat_id === group.data.chat_id);
+    const gmsg = waitForEvent(sockB, 'message');
+    await api(`/api/chats/${group.data.chat_id}/messages`, { method: 'POST', token: tokA, body: { text: 'Всем привет в группе!' } });
+    const grec = await gmsg.catch(() => null);
+    check('сообщение из группы доставлено', grec?.text === 'Всем привет в группе!' && grec?.display_name === 'Алиса');
+
+    console.log('\n— Изображения');
+    const tinyPng = 'data:image/png;base64,' + Buffer.from(
+      '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63fcc3000003060170ebc39a0000000049454e44ae426082',
+      'hex'
+    ).toString('base64');
+    const imgMsg = await api(`/api/chats/${chat1.data.chat_id}/messages`, { method: 'POST', token: tokB, body: { text: '', image: tinyPng } });
+    check('картинка принята и сохранена', imgMsg.status === 200 && !!imgMsg.data.message?.image);
+    const imgRes = await fetch(BASE + imgMsg.data.message.image);
+    check('картинка отдаётся по HTTP', imgRes.status === 200);
+    const badImg = await api(`/api/chats/${chat1.data.chat_id}/messages`, { method: 'POST', token: tokB, body: { text: '', image: 'data:text/html;base64,PGI+' } });
+    check('не-картинка отклоняется', badImg.status === 400);
+
+    console.log('\n— Доступ');
+    const chatsB = await api('/api/chats', { token: tokB });
+    const otherChat = chatsB.data.chats[0]?.id;
+    // создаём третьего пользователя, который не участник чата Алисы и Боба
+    const regC = await api('/api/register', { method: 'POST', body: { username: `carol_${suffix}`, password: 'secret3' } });
+    const foreign = await api(`/api/chats/${chat1.data.chat_id}/messages`, { token: regC.data.token });
+    check('чужой не может читать чужой чат', foreign.status === 403);
+
+    console.log('\n— Оффлайн');
+    const offPromise = new Promise((resolve) => {
+      const t = setTimeout(() => resolve(null), 5000);
+      sockA.on('presence', function handler(p) {
+        if (p.user_id === bob.id && p.online === false) {
+          clearTimeout(t);
+          sockA.off('presence', handler);
+          resolve(p);
+        }
+      });
+    });
+    sockB.disconnect();
+    const presOff = await offPromise;
+    check('Алиса получает оффлайн-статус Боба', presOff !== null);
+
+    sockA.disconnect();
+
+  } finally {
+    server.kill();
+    await sleep(200);
+  }
+
+  console.log(failures === 0 ? '\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ' : `\nПРОВАЛОВ: ${failures}`);
+  process.exit(failures === 0 ? 0 : 1);
+}
+
+main().catch((e) => { console.error(e); process.exit(1); });

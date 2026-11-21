@@ -12,8 +12,11 @@ import {
   db, createUser, getUserById, getUserWithPassword, listUsers,
   createChat, findDirectChat, isMember, chatMemberIds,
   insertMessage, listMessages, listChatsForUser, markRead,
+  createPost, getPost, listFeed, listUserPosts, deletePost,
+  toggleLike, incViews, addComment, listComments, updateProfile, setAvatar,
 } from './src/db.js';
 import { hashPassword, verifyPassword, signToken, verifyToken } from './src/auth.js';
+import { upload, checkUploadSize, mediaKind, publicUrl, MAX_VIDEO_BYTES } from './src/media.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.BLOOP_DATA_DIR || path.join(process.cwd(), 'data');
@@ -38,7 +41,10 @@ function fail(res, code, message) {
 }
 
 function publicUser(u) {
-  return u ? { id: u.id, username: u.username, display_name: u.display_name } : null;
+  return u ? {
+    id: u.id, username: u.username, display_name: u.display_name,
+    avatar: u.avatar ?? null, bio: u.bio ?? '',
+  } : null;
 }
 
 // Новичков в чате уведомляем и сразу присоединяем их сокеты к комнате,
@@ -183,8 +189,157 @@ api.post('/chats/:id/read', (req, res) => {
 app.use('/api', api);
 app.use('/api', (req, res) => fail(res, 404, 'Неизвестный маршрут API'));
 
+// ---------- соцсеть: загрузка медиа ----------
+
+api.post('/upload', upload.single('file'), (req, res) => {
+  if (!req.file) return fail(res, 400, 'Файл не передан');
+  if (!checkUploadSize(req.file)) {
+    fs.unlinkSync(req.file.path);
+    return fail(res, 413, 'Файл слишком большой (видео до 300 МБ, изображения до 10 МБ)');
+  }
+  res.json({
+    url: publicUrl(req.file.filename),
+    kind: mediaKind(req.file.mimetype),
+    mime: req.file.mimetype,
+    size: req.file.size,
+    name: req.file.originalname,
+  });
+});
+
+// ---------- соцсеть: посты, лента, клипы, видео ----------
+
+const MEDIA_RE = /^\/uploads\/[a-f0-9]+\.(png|jpg|gif|webp|mp4|webm|mov)$/;
+const VIDEO_EXT = new Set(['mp4', 'webm', 'mov']);
+const IMAGE_EXT = new Set(['png', 'jpg', 'gif', 'webp']);
+
+api.post('/posts', (req, res) => {
+  const { type, text, media, duration } = req.body || {};
+  if (!['post', 'clip', 'video'].includes(type)) return fail(res, 400, 'Неизвестный тип публикации');
+  const body = String(text || '').trim().slice(0, 4000);
+  let mediaOk = null;
+  if (media != null) {
+    const match = MEDIA_RE.exec(String(media));
+    if (!match) return fail(res, 400, 'Некорректная ссылка на медиафайл');
+    const isVideo = VIDEO_EXT.has(match[1]);
+    if (type === 'post' && isVideo) return fail(res, 400, 'В посте допустимо только изображение');
+    if ((type === 'clip' || type === 'video') && !isVideo) {
+      return fail(res, 400, 'Клипы и видео — только видеофайлы (MP4, WebM, MOV)');
+    }
+    mediaOk = String(media);
+  }
+  if (type === 'clip' || type === 'video') {
+    if (!mediaOk) return fail(res, 400, 'Для клипа/видео нужно приложить видеофайл');
+  }
+  if (!body && !mediaOk) return fail(res, 400, 'Пустая публикация');
+  const dur = Number(duration);
+  const id = createPost({
+    authorId: req.user.id,
+    type,
+    text: body,
+    media: mediaOk,
+    duration: Number.isFinite(dur) && dur > 0 && dur < 36000 ? dur : null,
+  });
+  res.json({ post: getPost(id, req.user.id) });
+});
+
+api.get('/feed', (req, res) => {
+  const type = ['post', 'clip', 'video'].includes(req.query.type) ? req.query.type : null;
+  res.json({
+    posts: listFeed(req.user.id, {
+      type,
+      before: Math.max(0, Number(req.query.before) || 0),
+      limit: Math.min(50, Math.max(1, Number(req.query.limit) || 20)),
+    }),
+  });
+});
+
+api.get('/posts/:id', (req, res) => {
+  const post = getPost(Number(req.params.id), req.user.id);
+  if (!post) return fail(res, 404, 'Публикация не найдена');
+  res.json({ post });
+});
+
+api.delete('/posts/:id', (req, res) => {
+  const ok = deletePost(Number(req.params.id), req.user.id);
+  if (!ok) return fail(res, 403, 'Можно удалять только свои публикации');
+  res.json({ ok: true });
+});
+
+api.post('/posts/:id/like', (req, res) => {
+  const id = Number(req.params.id);
+  if (!getPost(id, req.user.id)) return fail(res, 404, 'Публикация не найдена');
+  res.json(toggleLike(id, req.user.id));
+});
+
+api.post('/posts/:id/view', (req, res) => {
+  res.json({ views: incViews(Number(req.params.id)) });
+});
+
+api.get('/posts/:id/comments', (req, res) => {
+  res.json({ comments: listComments(Number(req.params.id)) });
+});
+
+api.post('/posts/:id/comments', (req, res) => {
+  const id = Number(req.params.id);
+  if (!getPost(id, req.user.id)) return fail(res, 404, 'Публикация не найдена');
+  const text = String(req.body?.text || '').trim().slice(0, 1000);
+  if (!text) return fail(res, 400, 'Пустой комментарий');
+  res.json({ comment: addComment(id, req.user.id, text) });
+});
+
+// ---------- соцсеть: профили ----------
+
+api.get('/users/:id', (req, res) => {
+  const user = getUserById(Number(req.params.id));
+  if (!user) return fail(res, 404, 'Пользователь не найден');
+  const counts = db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM posts WHERE author_id = ?) AS posts,
+      (SELECT COUNT(*) FROM posts WHERE author_id = ? AND type = 'clip') AS clips,
+      (SELECT COUNT(*) FROM posts WHERE author_id = ? AND type = 'video') AS videos
+  `).get(user.id, user.id, user.id);
+  res.json({ user: publicUser(user), counts });
+});
+
+api.get('/users/:id/posts', (req, res) => {
+  const type = ['post', 'clip', 'video'].includes(req.query.type) ? req.query.type : null;
+  res.json({
+    posts: listUserPosts(Number(req.params.id), req.user.id, {
+      type,
+      before: Math.max(0, Number(req.query.before) || 0),
+      limit: Math.min(50, Math.max(1, Number(req.query.limit) || 20)),
+    }),
+  });
+});
+
+api.patch('/me', (req, res) => {
+  const displayName = String(req.body?.display_name || '').trim().slice(0, 40);
+  const bio = String(req.body?.bio ?? '').trim().slice(0, 300);
+  const user = updateProfile(req.user.id, {
+    displayName: displayName || null,
+    bio: req.body?.bio === undefined ? null : bio,
+  });
+  res.json({ user: publicUser(user) });
+});
+
+api.post('/me/avatar', upload.single('file'), (req, res) => {
+  if (!req.file) return fail(res, 400, 'Файл не передан');
+  if (mediaKind(req.file.mimetype) !== 'image' || !checkUploadSize(req.file)) {
+    fs.unlinkSync(req.file.path);
+    return fail(res, 400, 'Нужна картинка до 10 МБ');
+  }
+  const user = setAvatar(req.user.id, publicUrl(req.file.filename));
+  res.json({ user: publicUser(user) });
+});
+
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
   console.error(err);
+  if (err.message === 'UNSUPPORTED_TYPE') {
+    return fail(res, 400, 'Формат не поддерживается: картинки (PNG, JPEG, GIF, WebP) и видео (MP4, WebM, MOV)');
+  }
+  if (err.code === 'LIMIT_FILE_SIZE') {
+    return fail(res, 413, `Файл больше лимита (${Math.round(MAX_VIDEO_BYTES / 1048576)} МБ для видео)`);
+  }
   fail(res, err.type === 'entity.too.large' ? 413 : 500, 'Ошибка сервера');
 });
 

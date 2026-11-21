@@ -49,6 +49,11 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id);
 `);
 
+// Миграции для баз, созданных до появления соцсети (v2).
+const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+if (!userCols.includes('avatar')) db.exec('ALTER TABLE users ADD COLUMN avatar TEXT');
+if (!userCols.includes('bio')) db.exec("ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''");
+
 export function createUser({ username, displayName, passwordHash }) {
   const { lastInsertRowid } = db.prepare(
     'INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)'
@@ -57,7 +62,7 @@ export function createUser({ username, displayName, passwordHash }) {
 }
 
 export function getUserById(id) {
-  return db.prepare('SELECT id, username, display_name, created_at FROM users WHERE id = ?').get(id) || null;
+  return db.prepare('SELECT id, username, display_name, avatar, bio, created_at FROM users WHERE id = ?').get(id) || null;
 }
 
 export function getUserWithPassword(username) {
@@ -65,7 +70,7 @@ export function getUserWithPassword(username) {
 }
 
 export function listUsers() {
-  return db.prepare('SELECT id, username, display_name FROM users ORDER BY username COLLATE NOCASE').all();
+  return db.prepare('SELECT id, username, display_name, avatar FROM users ORDER BY username COLLATE NOCASE').all();
 }
 
 export function createChat({ type, name = null, createdBy, memberIds }) {
@@ -143,7 +148,7 @@ export function listChatsForUser(userId) {
     'SELECT COUNT(*) AS n FROM messages WHERE chat_id = ? AND id > ? AND sender_id <> ?'
   );
   const peer = db.prepare(`
-    SELECT u.id, u.username, u.display_name FROM chat_members cm
+    SELECT u.id, u.username, u.display_name, u.avatar FROM chat_members cm
     JOIN users u ON u.id = cm.user_id
     WHERE cm.chat_id = ? AND cm.user_id <> ?
   `);
@@ -170,4 +175,165 @@ export function markRead(chatId, userId, messageId) {
     UPDATE chat_members SET last_read_message_id = MAX(last_read_message_id, ?)
     WHERE chat_id = ? AND user_id = ?
   `).run(messageId, chatId, userId);
+}
+
+/* =====================================================================
+   Соцсеть (v2): посты, клипы, видео, лайки, комментарии, просмотры
+   ===================================================================== */
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS posts (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  author_id  INTEGER NOT NULL REFERENCES users(id),
+  type       TEXT NOT NULL CHECK (type IN ('post', 'clip', 'video')),
+  text       TEXT NOT NULL DEFAULT '',
+  media      TEXT,
+  duration   REAL,
+  views      INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS likes (
+  post_id INTEGER NOT NULL REFERENCES posts(id),
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  PRIMARY KEY (post_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS comments (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id    INTEGER NOT NULL REFERENCES posts(id),
+  author_id  INTEGER NOT NULL REFERENCES users(id),
+  text       TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id, id);
+CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id, id);
+`);
+
+// Универсальная сборка карточки поста/клипа/видео с автором и счётчиками.
+// Порядок плейсхолдеров в SQL: EXISTS-подзапрос лайков (viewerId), затем
+// условия where, затем LIMIT.
+const postSelect = (viewerId, where = '', params = [], limit = 20) => db.prepare(`
+  SELECT p.id, p.author_id, p.type, p.text, p.media, p.duration, p.views, p.created_at,
+         u.username, u.display_name, u.avatar AS author_avatar,
+         (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS likes,
+         (SELECT COUNT(*) FROM comments cm WHERE cm.post_id = p.id) AS comments_count,
+         EXISTS(SELECT 1 FROM likes l2 WHERE l2.post_id = p.id AND l2.user_id = ${viewerId ? '?' : '0'}) AS liked_by_me
+  FROM posts p JOIN users u ON u.id = p.author_id
+  WHERE 1=1 ${where}
+  ORDER BY p.id DESC
+  LIMIT ?
+`).all(...(viewerId ? [viewerId] : []), ...params, limit);
+
+function toPost(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    type: row.type,
+    text: row.text,
+    media: row.media,
+    duration: row.duration,
+    views: row.views,
+    created_at: row.created_at,
+    likes: row.likes,
+    liked_by_me: !!row.liked_by_me,
+    comments_count: row.comments_count,
+    author: {
+      id: row.author_id,
+      username: row.username,
+      display_name: row.display_name,
+      avatar: row.author_avatar,
+    },
+  };
+}
+
+export function createPost({ authorId, type, text = '', media = null, duration = null }) {
+  const { lastInsertRowid } = db.prepare(
+    'INSERT INTO posts (author_id, type, text, media, duration) VALUES (?, ?, ?, ?, ?)'
+  ).run(authorId, type, text, media, duration);
+  return Number(lastInsertRowid);
+}
+
+export function getPost(id, viewerId) {
+  return toPost(postSelect(viewerId, 'AND p.id = ?', [id], 1).at(0));
+}
+
+export function listFeed(viewerId, { type = null, before = 0, limit = 20 } = {}) {
+  const where = [];
+  const params = [];
+  if (type) { where.push('AND p.type = ?'); params.push(type); }
+  if (before) { where.push('AND p.id < ?'); params.push(before); }
+  return postSelect(viewerId, where.join(' '), params, limit).map(toPost);
+}
+
+export function listUserPosts(authorId, viewerId, { type = null, before = 0, limit = 20 } = {}) {
+  const where = ['AND p.author_id = ?'];
+  const params = [authorId];
+  if (type) { where.push('AND p.type = ?'); params.push(type); }
+  if (before) { where.push('AND p.id < ?'); params.push(before); }
+  return postSelect(viewerId, where.join(' '), params, limit).map(toPost);
+}
+
+export function deletePost(id, authorId) {
+  const info = db.prepare('DELETE FROM posts WHERE id = ? AND author_id = ?').run(id, authorId);
+  if (info.changes === 0) return false;
+  db.prepare('DELETE FROM likes WHERE post_id = ?').run(id);
+  db.prepare('DELETE FROM comments WHERE post_id = ?').run(id);
+  return true;
+}
+
+export function toggleLike(postId, userId) {
+  const existing = db.prepare('SELECT 1 FROM likes WHERE post_id = ? AND user_id = ?').get(postId, userId);
+  if (existing) {
+    db.prepare('DELETE FROM likes WHERE post_id = ? AND user_id = ?').run(postId, userId);
+  } else {
+    db.prepare('INSERT INTO likes (post_id, user_id) VALUES (?, ?)').run(postId, userId);
+  }
+  const likes = db.prepare('SELECT COUNT(*) AS n FROM likes WHERE post_id = ?').get(postId).n;
+  return { liked: !existing, likes };
+}
+
+export function incViews(postId) {
+  db.prepare('UPDATE posts SET views = views + 1 WHERE id = ?').run(postId);
+  return db.prepare('SELECT views FROM posts WHERE id = ?').get(postId)?.views ?? 0;
+}
+
+export function addComment(postId, authorId, text) {
+  const { lastInsertRowid } = db.prepare(
+    'INSERT INTO comments (post_id, author_id, text) VALUES (?, ?, ?)'
+  ).run(postId, authorId, text);
+  return getCommentById(Number(lastInsertRowid));
+}
+
+export function getCommentById(id) {
+  return db.prepare(`
+    SELECT cm.id, cm.post_id, cm.author_id, cm.text, cm.created_at,
+           u.username, u.display_name, u.avatar
+    FROM comments cm JOIN users u ON u.id = cm.author_id
+    WHERE cm.id = ?
+  `).get(id) || null;
+}
+
+export function listComments(postId, { before = 0, limit = 100 } = {}) {
+  return db.prepare(`
+    SELECT cm.id, cm.post_id, cm.author_id, cm.text, cm.created_at,
+           u.username, u.display_name, u.avatar
+    FROM comments cm JOIN users u ON u.id = cm.author_id
+    WHERE cm.post_id = ? ${before ? 'AND cm.id < ?' : ''}
+    ORDER BY cm.id ASC LIMIT ?
+  `).all(...(before ? [postId, before, limit] : [postId, limit]));
+}
+
+export function updateProfile(userId, { displayName, bio }) {
+  db.prepare(`
+    UPDATE users SET display_name = COALESCE(?, display_name), bio = COALESCE(?, bio)
+    WHERE id = ?
+  `).run(displayName ?? null, bio ?? null, userId);
+  return getUserById(userId);
+}
+
+export function setAvatar(userId, url) {
+  db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(url, userId);
+  return getUserById(userId);
 }

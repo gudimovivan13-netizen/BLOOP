@@ -34,6 +34,18 @@ async function api(path, { method = 'GET', body, token: t } = {}) {
   return { status: res.status, data };
 }
 
+async function upload(path, bytes, mime, token) {
+  const fd = new FormData();
+  fd.append('file', new Blob([bytes], { type: mime }), 'test.bin');
+  const res = await fetch(BASE + path, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: fd,
+  });
+  const data = await res.json().catch(() => ({}));
+  return { status: res.status, data };
+}
+
 function connectSocket(token) {
   return new Promise((resolve, reject) => {
     const s = io(BASE, { auth: { token } });
@@ -181,6 +193,92 @@ async function main() {
     check('Алиса получает оффлайн-статус Боба', presOff !== null);
 
     sockA.disconnect();
+
+    console.log('\n— Соцсеть: загрузка медиа');
+    const pngBytes = Buffer.from(
+      '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63fcc3000003060170ebc39a0000000049454e44ae426082',
+      'hex'
+    );
+    const imgUp = await upload('/api/upload', pngBytes, 'image/png', tokA);
+    check('загрузка картинки возвращает URL', imgUp.status === 200 && imgUp.data.url?.startsWith('/uploads/') && imgUp.data.kind === 'image');
+    const imgPub = await fetch(BASE + imgUp.data.url);
+    check('загруженная картинка доступна', imgPub.status === 200);
+
+    const mp4Bytes = Buffer.from('000000186674797069736f6d00000200', 'hex');
+    const vidUp = await upload('/api/upload', mp4Bytes, 'video/mp4', tokA);
+    check('загрузка видео возвращает URL', vidUp.status === 200 && vidUp.data.kind === 'video');
+
+    const badUp = await upload('/api/upload', Buffer.from('hello'), 'text/plain', tokA);
+    check('не-медиа файл отклоняется', badUp.status === 400);
+
+    console.log('\n— Соцсеть: посты и лента');
+    const post1 = await api('/api/posts', { method: 'POST', token: tokA, body: { type: 'post', text: 'Первый пост в BLOOP!' } });
+    check('текстовый пост создан', post1.status === 200 && post1.data.post?.type === 'post');
+    const post2 = await api('/api/posts', { method: 'POST', token: tokB, body: { type: 'post', text: 'Пост с картинкой', media: imgUp.data.url } });
+    check('пост с изображением создан', post2.status === 200 && post2.data.post?.media === imgUp.data.url);
+    const clip1 = await api('/api/posts', { method: 'POST', token: tokA, body: { type: 'clip', text: 'Мой клип', media: vidUp.data.url, duration: 15.5 } });
+    check('клип создан', clip1.status === 200 && clip1.data.post?.type === 'clip' && clip1.data.post?.duration === 15.5);
+
+    const postWithVideo = await api('/api/posts', { method: 'POST', token: tokA, body: { type: 'post', text: 'пост с видео', media: vidUp.data.url } });
+    check('видео в обычном посте отклоняется', postWithVideo.status === 400);
+    const clipNoMedia = await api('/api/posts', { method: 'POST', token: tokA, body: { type: 'clip', text: 'без файла' } });
+    check('клип без видео отклоняется', clipNoMedia.status === 400);
+    const emptyPost = await api('/api/posts', { method: 'POST', token: tokA, body: { type: 'post', text: '' } });
+    check('пустой пост отклоняется', emptyPost.status === 400);
+
+    const feedA = await api('/api/feed', { token: tokA });
+    check('лента содержит все публикации', feedA.data.posts?.length === 3);
+    const inFeed = feedA.data.posts.find(p => p.id === post2.data.post.id);
+    check('в ленте есть автор и счётчики', inFeed?.author?.display_name === 'Боб' && inFeed?.likes === 0 && inFeed?.liked_by_me === false);
+    const feedClips = await api('/api/feed?type=clip', { token: tokA });
+    check('фильтр ленты по клипам работает', feedClips.data.posts?.length === 1 && feedClips.data.posts[0].type === 'clip');
+
+    console.log('\n— Соцсеть: лайки, комментарии, просмотры');
+    const pid = post2.data.post.id;
+    const like1 = await api(`/api/posts/${pid}/like`, { method: 'POST', token: tokA });
+    check('лайк ставится', like1.data.liked === true && like1.data.likes === 1);
+    const like2 = await api(`/api/posts/${pid}/like`, { method: 'POST', token: tokB });
+    check('второй лайк считается', like2.data.likes === 2);
+    const like3 = await api(`/api/posts/${pid}/like`, { method: 'POST', token: tokA });
+    check('повторный лайк снимается', like3.data.liked === false && like3.data.likes === 1);
+
+    const feedLiked = await api('/api/feed', { token: tokB });
+    check('liked_by_me обновился в ленте', feedLiked.data.posts.find(p => p.id === pid)?.liked_by_me === true);
+
+    const cm1 = await api(`/api/posts/${pid}/comments`, { method: 'POST', token: tokB, body: { text: 'Отличный пост!' } });
+    check('комментарий добавлен', cm1.status === 200 && cm1.data.comment?.display_name === 'Боб');
+    const cmEmpty = await api(`/api/posts/${pid}/comments`, { method: 'POST', token: tokB, body: { text: '  ' } });
+    check('пустой комментарий отклоняется', cmEmpty.status === 400);
+    const cmList = await api(`/api/posts/${pid}/comments`, { token: tokA });
+    check('список комментариев отдаётся', cmList.data.comments?.length === 1);
+    const feedAfterCm = await api('/api/feed', { token: tokA });
+    check('счётчик комментариев в ленте = 1', feedAfterCm.data.posts.find(p => p.id === pid)?.comments_count === 1);
+
+    const v1r = await api(`/api/posts/${pid}/view`, { method: 'POST', token: tokA });
+    check('просмотр считается', v1r.data.views === 1);
+
+    console.log('\n— Соцсеть: профили');
+    const profB = await api(`/api/users/${bob.id}`, { token: tokA });
+    check('профиль Боба открывается', profB.status === 200 && profB.data.user?.display_name === 'Боб' && profB.data.counts?.posts === 1);
+    const profPosts = await api(`/api/users/${bob.id}/posts`, { token: tokA });
+    check('посты Боба в его профиле', profPosts.data.posts?.length === 1);
+
+    const avatarUp = await upload('/api/me/avatar', pngBytes, 'image/png', tokB);
+    check('аватар загружается', avatarUp.status === 200 && avatarUp.data.user?.avatar?.startsWith('/uploads/'));
+    const profB2 = await api(`/api/users/${bob.id}`, { token: tokA });
+    check('аватар виден в профиле', profB2.data.user?.avatar === avatarUp.data.user.avatar);
+
+    const patchMe = await api('/api/me', { method: 'PATCH', token: tokB, body: { display_name: 'Боб-Строитель', bio: 'Люблю BLOOP' } });
+    check('профиль обновляется', patchMe.data.user?.display_name === 'Боб-Строитель' && patchMe.data.user?.bio === 'Люблю BLOOP');
+
+    console.log('\n— Соцсеть: удаление и доступ');
+    const delForeign = await api(`/api/posts/${pid}`, { method: 'DELETE', token: tokA });
+    check('чужой пост удалить нельзя', delForeign.status === 403);
+    const post3 = await api('/api/posts', { method: 'POST', token: tokA, body: { type: 'post', text: 'Скоро удалю' } });
+    const delOwn = await api(`/api/posts/${post3.data.post.id}`, { method: 'DELETE', token: tokA });
+    check('свой пост удаляется', delOwn.status === 200);
+    const feedAfterDel = await api('/api/feed', { token: tokA });
+    check('удалённого поста нет в ленте', !feedAfterDel.data.posts.some(p => p.id === post3.data.post.id));
 
   } finally {
     server.kill();

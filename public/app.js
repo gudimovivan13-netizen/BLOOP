@@ -2730,10 +2730,20 @@ function currentAccent() {
   return localStorage.getItem('bloop_accent') || 'azure';
 }
 
+/* rgba-переменные из hex: старые WebView не умеют color-mix(),
+   поэтому все полупрозрачные оттенки акцента считаем здесь */
+function hexToRgb(hex) {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  return m ? `${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}` : '122, 162, 255';
+}
+
 function applyAccent() {
   const { a, b } = ACCENTS[currentAccent()] || ACCENTS.azure;
-  document.documentElement.style.setProperty('--accent', a);
-  document.documentElement.style.setProperty('--accent-2', b);
+  const root = document.documentElement;
+  root.style.setProperty('--accent', a);
+  root.style.setProperty('--accent-2', b);
+  root.style.setProperty('--accent-rgb', hexToRgb(a));
+  root.style.setProperty('--accent-2-rgb', hexToRgb(b));
 }
 
 function renderThemeSeg() {
@@ -2778,6 +2788,16 @@ $('#settings-modal').addEventListener('click', (e) => {
 });
 applyAccent();
 applyTheme();
+
+/* Слабые/старые устройства: lite-режим — без стеклянного размытия и
+   анимации авроры, чтобы интерфейс не тормозил и нажатия не терялись
+   (форсировать можно через ?lite=1). */
+try {
+  const weak = (navigator.hardwareConcurrency || 8) <= 4
+    || (navigator.deviceMemory !== undefined && navigator.deviceMemory <= 4)
+    || new URLSearchParams(location.search).has('lite');
+  if (weak) document.documentElement.classList.add('lite');
+} catch { /* не критично */ }
 
 /* =====================================================================
    Билдер опроса в композере

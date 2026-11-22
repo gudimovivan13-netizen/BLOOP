@@ -17,6 +17,7 @@
     users: [], chats: [], members: [], messages: [],
     posts: [], likes: [], comments: [], notifs: [], tags: [],
     emailCodes: [], stories: [], storyViews: [], postReactions: [], pollVotes: [], msgReactions: [],
+    bots: [], botStates: {},
   });
 
   let db;
@@ -26,6 +27,8 @@
   for (const k of ['emailCodes', 'stories', 'storyViews', 'postReactions', 'pollVotes', 'msgReactions']) {
     if (!Array.isArray(db[k])) db[k] = [];
   }
+  if (!Array.isArray(db.bots)) db.bots = [];
+  if (!db.botStates || typeof db.botStates !== 'object') db.botStates = {};
   if (!db.seq.story) db.seq.story = 0;
 
   const save = () => {
@@ -205,6 +208,7 @@
       id: m.id, chat_id: m.chat_id, sender_id: m.sender_id, text: m.text,
       image: m.image, media_kind: m.media_kind || 'image', created_at: m.created_at,
       username: u?.username || '', display_name: u?.display_name || '',
+      kb: m.kb || null,
       ...msgReactionsOf(m.id, uid),
     };
     if (m.reply_to) {
@@ -301,7 +305,7 @@
       if (chat.type === 'direct') {
         const peerMem = db.members.find(x => x.chat_id === chat.id && x.user_id !== uid);
         const pu = db.users.find(u => u.id === peerMem?.user_id);
-        if (pu) peer = { id: pu.id, username: pu.username, display_name: pu.display_name, avatar: pu.avatar };
+        if (pu) peer = { id: pu.id, username: pu.username, display_name: pu.display_name, avatar: pu.avatar, is_bot: !!pu.is_bot, has_miniapp: pu.is_bot ? botHasMiniapp(pu.id) : false };
       }
       const lastRead = mem.last_read_message_id || 0;
       const unread = msgs.filter(x => x.id > lastRead && x.sender_id !== uid).length;
@@ -439,10 +443,10 @@
   route('GET', /^\/api\/users$/, ({ me }) => {
     requireUser(me);
     // локальный мир: считаем всех «онлайн» — это одна локальная копия BLOOP
-    return { users: db.users.map(u => ({ ...publicUser(u), online: true })) };
+    return { users: db.users.filter(u => !u.is_bot).map(u => ({ ...publicUser(u), online: true })) };
   });
 
-  route('POST', /^\/api\/chats$/, ({ me, body }) => {
+  route('POST', /^\/api\/chats$/, async ({ me, body }) => {
     me = requireUser(me);
     if (body?.type === 'direct') {
       const peer = db.users.find(u => u.id === Number(body.user_id));
@@ -459,6 +463,11 @@
       db.members.push({ chat_id: chatId, user_id: peer.id, last_read_message_id: 0 });
       save();
       emit('chat:new', { chat_id: chatId });
+      // первый заход в чат с ботом — событие start
+      if (peer.is_bot) {
+        const startBot = db.bots.find(b => b.user_id === peer.id && !b.deleted);
+        if (startBot) await runBotEventLocal(startBot, chatId, me, { kind: 'start' });
+      }
       return { chat_id: chatId, existed: false };
     }
     if (body?.type === 'group') {
@@ -515,7 +524,18 @@
     save();
     const out = msgOut(message, me.id);
     emit('message', rewrite(out));
-    return { message: rewrite(out) };
+    // чат с ботом: передаём сообщение движку, ответы отдаём клиенту
+    const msgBot = findChatBot(chatId);
+    let botMessages = [];
+    if (msgBot) {
+      const beforeId = message.id;
+      try { await runBotEventLocal(msgBot, chatId, me, { kind: 'message', text, message_id: message.id }); }
+      catch (e) { console.error('BLOOP local, ошибка бота:', e); }
+      botMessages = db.messages
+        .filter(x => x.chat_id === chatId && x.id > beforeId)
+        .map(m => msgOut(m, me.id));
+    }
+    return { message: rewrite(out), bot_messages: rewrite(botMessages) };
   });
 
   // эмодзи-реакция на сообщении
@@ -921,6 +941,321 @@
     return { reply: assistantFallback(last?.content), source: 'fallback' };
   });
 
+
+  /* ---------- платформа ботов (v6): движок в браузере ---------- */
+
+  const ECHO_TEMPLATE = `// Эхо-бот: повторяет всё, что ему написали.
+// Доступно: ctx.reply(текст, { keyboard }), ctx.state, ctx.message, ctx.user
+if (ctx.event === 'start') {
+  ctx.reply('Привет, ' + ctx.user.name + '! Я эхо-бот. Напиши мне что-нибудь.');
+} else if (ctx.event === 'message') {
+  ctx.reply('Ты написал: ' + ctx.message.text);
+}`;
+
+  function botHasMiniapp(botUserId) {
+    const b = db.bots.find(x => x.user_id === botUserId && x.enabled && !x.deleted);
+    return !!(b?.miniapp_enabled && (b.miniapp_code || '').trim());
+  }
+
+  function findChatBot(chatId) {
+    for (const m of db.members.filter(x => x.chat_id === chatId)) {
+      const u = db.users.find(x => x.id === m.user_id);
+      if (u?.is_bot) return db.bots.find(b => b.user_id === u.id && !b.deleted) || null;
+    }
+    return null;
+  }
+
+  function publicBotLocal(b, withToken) {
+    const out = {
+      id: b.id, user_id: b.user_id, username: b.username,
+      display_name: b.display_name, description: b.description || '',
+      enabled: !!b.enabled, msg_count: b.msg_count || 0,
+      has_miniapp: !!(b.miniapp_enabled && (b.miniapp_code || '').trim()),
+      created_at: b.created_at,
+    };
+    if (withToken) {
+      out.token = b.token;
+      out.code = b.code || '';
+      out.miniapp = { enabled: !!b.miniapp_enabled, title: b.miniapp_title || '', code: b.miniapp_code || '' };
+      out.logs = b.logs || [];
+    }
+    return out;
+  }
+
+  function normalizeKbLocal(kb) {
+    if (!Array.isArray(kb) || kb.length === 0) return null;
+    const normBtn = (b) => {
+      if (typeof b === 'string') return { t: b.slice(0, 64), d: b.slice(0, 64) };
+      if (b && typeof b === 'object') {
+        const t = String(b.t ?? b.text ?? '').trim().slice(0, 64);
+        const d = String(b.d ?? b.data ?? t).trim().slice(0, 64);
+        return t ? { t, d } : null;
+      }
+      return null;
+    };
+    const rows = kb.slice(0, 6).map(row => {
+      const arr = Array.isArray(row) ? row : [row];
+      return arr.slice(0, 4).map(normBtn).filter(Boolean);
+    }).filter(r => r.length);
+    return rows.length ? rows : null;
+  }
+
+  function botReplyLocal(bot, chatId, text, kb) {
+    const t = String(text ?? '').trim().slice(0, 4000);
+    if (!t) throw new Error('ctx.reply: текст пуст');
+    const msg = {
+      id: next('msg'), chat_id: chatId, sender_id: bot.user_id,
+      text: t, image: null, media_kind: 'image', reply_to: null,
+      kb: kb || null, created_at: now(),
+    };
+    db.messages.push(msg);
+    bot.msg_count = (bot.msg_count || 0) + 1;
+    save();
+    emit('message', rewrite(msgOut(msg, 0)));
+    return msg;
+  }
+
+  const cloneVal = (v) => {
+    try { return JSON.parse(JSON.stringify(v ?? null)); } catch { return String(v); }
+  };
+
+  // тот же контракт ctx, что и на сервере; песочница — new Function + таймаут
+  async function runBotEventLocal(bot, chatId, user, event) {
+    if (!bot.enabled || bot.deleted) return { skipped: true };
+    const logs = Array.isArray(bot.logs) ? bot.logs.slice(-25) : [];
+    const pushLog = (level, parts) => {
+      logs.push({
+        t: Date.now(), level, event: event.kind,
+        text: parts.map(v => (typeof v === 'string' ? v : JSON.stringify(v))).join(' ').slice(0, 300),
+      });
+      if (logs.length > 30) logs.shift();
+    };
+    const con = {
+      log: (...a) => pushLog('log', a), info: (...a) => pushLog('log', a),
+      warn: (...a) => pushLog('warn', a), error: (...a) => pushLog('error', a),
+    };
+    if (!db.botStates[bot.id] || typeof db.botStates[bot.id] !== 'object') db.botStates[bot.id] = {};
+    const stateData = db.botStates[bot.id];
+    const state = {
+      get(key, def = null) {
+        const v = stateData[String(key).slice(0, 64)];
+        return v === undefined ? def : v;
+      },
+      set(key, val) {
+        stateData[String(key).slice(0, 64)] = cloneVal(val);
+        const keys = Object.keys(stateData);
+        if (keys.length > 100) for (const k of keys.slice(0, keys.length - 100)) delete stateData[k];
+      },
+      keys: () => Object.keys(stateData),
+    };
+    const reply = (text, opts = {}) =>
+      botReplyLocal(bot, chatId, text, opts?.keyboard ? normalizeKbLocal(opts.keyboard) : null);
+
+    const raw = String(event.text || '').trim();
+    const mCmd = /^\/([a-zA-Z0-9_]{1,24})(?:\s+([\s\S]*))?$/.exec(raw);
+    const cmd = mCmd ? {
+      command: mCmd[1].toLowerCase(),
+      args: (mCmd[2] || '').trim() ? (mCmd[2] || '').trim().split(/\s+/) : [],
+      argsText: (mCmd[2] || '').trim(),
+    } : null;
+
+    const ctx = {
+      event: event.kind,
+      message: event.kind === 'message' ? {
+        text: raw.slice(0, 4000), command: cmd?.command ?? null,
+        args: cmd?.args ?? [], argsText: cmd?.argsText ?? '',
+        message_id: Number(event.message_id) || null,
+      } : null,
+      callback: event.kind === 'callback' ? {
+        data: String(event.data || '').slice(0, 64),
+        message_id: Number(event.message_id) || null,
+      } : null,
+      miniapp: event.kind === 'miniapp' ? { data: cloneVal(event.data) } : null,
+      user: { id: user.id, name: user.display_name, username: user.username },
+      chat: { id: chatId },
+      reply, state,
+    };
+
+    let error = null;
+    const code = String(bot.code || '').trim();
+    if (!code) {
+      if (event.kind === 'start') {
+        try { reply('Бот подключён, но у него пока нет программы. Владелец может написать код в разделе «Мои боты».'); } catch { /* noop */ }
+      }
+    } else {
+      try {
+        const fn = new Function('ctx', '(async () => {\n' + code + '\n})()');
+        await Promise.race([Promise.resolve(fn(ctx)), new Promise((r) => setTimeout(r, 3000))]);
+      } catch (e) {
+        error = String(e?.message || e).slice(0, 300);
+        pushLog('error', [error]);
+      }
+    }
+    bot.logs = logs;
+    save();
+    return { logs, error };
+  }
+
+  /* ---------- маршруты ботов ---------- */
+
+  route('GET', /^\/api\/bots\/mine$/, ({ me }) => {
+    requireUser(me);
+    return { bots: db.bots.filter(b => b.owner_id === me.id && !b.deleted).sort((a, b) => b.id - a.id).map(b => publicBotLocal(b, true)) };
+  });
+
+  route('POST', /^\/api\/bots$/, ({ me, body }) => {
+    me = requireUser(me);
+    let username = String(body?.username || '').trim().toLowerCase();
+    if (username && !username.startsWith('bot_')) username = 'bot_' + username;
+    if (!/^bot_[a-z0-9_]{3,24}$/.test(username)) fail(400, 'Юзернейм бота: bot_имя, 3–24 символа — латиница, цифры, _');
+    if (db.users.some(u => u.username === username)) fail(409, 'Такой юзернейм уже занят');
+    const displayName = String(body?.display_name || '').trim().slice(0, 40) || username.replace(/^bot_/, 'Бот ');
+    const description = String(body?.description || '').trim().slice(0, 300);
+    const user = {
+      id: next('user'), username, display_name: displayName,
+      password_hash: '', avatar: null, bio: '', is_bot: 1, created_at: now(),
+    };
+    db.users.push(user);
+    const bot = {
+      id: next('bot'), owner_id: me.id, user_id: user.id,
+      username, display_name: displayName, description,
+      token: 'bta_' + uuid().replaceAll('-', ''),
+      code: ECHO_TEMPLATE, enabled: 1, deleted: 0, msg_count: 0, logs: [],
+      miniapp_enabled: 0, miniapp_title: '', miniapp_code: '',
+      created_at: now(),
+    };
+    db.bots.push(bot);
+    save();
+    return { bot: publicBotLocal(bot, true) };
+  });
+
+  route('PUT', /^\/api\/bots\/(\d+)$/, ({ me, params, body }) => {
+    me = requireUser(me);
+    const bot = db.bots.find(b => b.id === params[0] && !b.deleted);
+    if (!bot) fail(404, 'Бот не найден');
+    if (bot.owner_id !== me.id) fail(403, 'Это не ваш бот');
+    const b = body || {};
+    if (b.display_name !== undefined) {
+      bot.display_name = String(b.display_name).trim().slice(0, 40) || bot.display_name;
+      const u = db.users.find(x => x.id === bot.user_id);
+      if (u) u.display_name = bot.display_name;
+    }
+    if (b.description !== undefined) bot.description = String(b.description).trim().slice(0, 300);
+    if (b.code !== undefined) {
+      const code = String(b.code);
+      if (code.length > 20000) fail(400, 'Код больше 20000 символов');
+      bot.code = code;
+    }
+    if (b.enabled !== undefined) bot.enabled = b.enabled ? 1 : 0;
+    if (b.miniapp_enabled !== undefined) bot.miniapp_enabled = b.miniapp_enabled ? 1 : 0;
+    if (b.miniapp_title !== undefined) bot.miniapp_title = String(b.miniapp_title).trim().slice(0, 60);
+    if (b.miniapp_code !== undefined) {
+      const mc = String(b.miniapp_code);
+      if (mc.length > 60000) fail(400, 'Код мини-аппа больше 60000 символов');
+      bot.miniapp_code = mc;
+    }
+    save();
+    return { bot: publicBotLocal(bot, true) };
+  });
+
+  route('POST', /^\/api\/bots\/(\d+)\/retoken$/, ({ me, params }) => {
+    me = requireUser(me);
+    const bot = db.bots.find(b => b.id === params[0] && !b.deleted);
+    if (!bot) fail(404, 'Бот не найден');
+    if (bot.owner_id !== me.id) fail(403, 'Это не ваш бот');
+    bot.token = 'bta_' + uuid().replaceAll('-', '');
+    save();
+    return { token: bot.token };
+  });
+
+  route('DELETE', /^\/api\/bots\/(\d+)$/, ({ me, params }) => {
+    me = requireUser(me);
+    const bot = db.bots.find(b => b.id === params[0] && !b.deleted);
+    if (!bot) fail(404, 'Бот не найден');
+    if (bot.owner_id !== me.id) fail(403, 'Это не ваш бот');
+    bot.deleted = 1;
+    bot.enabled = 0;
+    const u = db.users.find(x => x.id === bot.user_id);
+    if (u) u.display_name = 'Удалённый бот';
+    save();
+    return { ok: true };
+  });
+
+  route('GET', /^\/api\/bots\/public$/, () => ({
+    bots: db.bots.filter(b => b.enabled && !b.deleted)
+      .sort((a, b) => (b.msg_count || 0) - (a.msg_count || 0) || b.id - a.id)
+      .map(b => publicBotLocal(b, false)),
+  }));
+
+  route('POST', /^\/api\/chats\/(\d+)\/callback$/, async ({ me, params, body }) => {
+    me = requireUser(me);
+    const chatId = params[0];
+    if (!isMember(chatId, me.id)) fail(403, 'Нет доступа к чату');
+    const bot = findChatBot(chatId);
+    if (!bot) fail(404, 'В этом чате нет бота');
+    const data = String(body?.data || '').slice(0, 64);
+    const messageId = Number(body?.message_id) || null;
+    const beforeId = db.messages.length ? db.messages[db.messages.length - 1].id : 0;
+    try {
+      await runBotEventLocal(bot, chatId, me, { kind: 'callback', data, message_id: messageId });
+    } catch (e) {
+      console.error('BLOOP local, ошибка бота:', e);
+    }
+    const botMessages = db.messages
+      .filter(x => x.chat_id === chatId && x.id > beforeId)
+      .map(m => msgOut(m, me.id));
+    return { ok: true, bot_messages: rewrite(botMessages) };
+  });
+
+  route('GET', /^\/api\/miniapp\/([a-z0-9_]+)\/state$/, ({ me, params }) => {
+    requireUser(me);
+    const bot = db.bots.find(b => b.username === params[0] && b.enabled && !b.deleted);
+    if (!bot || !bot.miniapp_enabled) fail(404, 'Мини-апп не найден');
+    return { state: db.botStates[bot.id] || {} };
+  });
+
+  route('POST', /^\/api\/miniapp\/([a-z0-9_]+)\/data$/, async ({ me, params, body }) => {
+    me = requireUser(me);
+    const bot = db.bots.find(b => b.username === params[0] && b.enabled && !b.deleted);
+    if (!bot || !bot.miniapp_enabled) fail(404, 'Мини-апп не найден');
+    // чат с ботом — создадим при первом касании мини-аппа
+    const existing = db.chats.find(c => c.type === 'direct' &&
+      db.members.some(m => m.chat_id === c.id && m.user_id === me.id) &&
+      db.members.some(m => m.chat_id === c.id && m.user_id === bot.user_id));
+    let chatId;
+    if (existing) {
+      chatId = existing.id;
+    } else {
+      chatId = next('chat');
+      db.chats.push({ id: chatId, type: 'direct', name: null, created_by: me.id, created_at: now() });
+      db.members.push({ chat_id: chatId, user_id: me.id, last_read_message_id: 0 });
+      db.members.push({ chat_id: chatId, user_id: bot.user_id, last_read_message_id: 0 });
+      save();
+      emit('chat:new', { chat_id: chatId });
+      await runBotEventLocal(bot, chatId, me, { kind: 'start' });
+    }
+    const data = body?.data;
+    try {
+      await runBotEventLocal(bot, chatId, me, { kind: 'miniapp', data });
+    } catch (e) {
+      console.error('BLOOP local, ошибка бота:', e);
+    }
+    return { ok: true, state: db.botStates[bot.id] || {} };
+  });
+
+  // страница мини-аппа для blob-просмотрщика локального режима
+  route('GET', /^\/api\/miniapp\/([a-z0-9_]+)\/html$/, ({ me, params }) => {
+    requireUser(me);
+    const bot = db.bots.find(b => b.username === params[0] && b.enabled && !b.deleted);
+    if (!bot || !bot.miniapp_enabled || !(bot.miniapp_code || '').trim()) fail(404, 'Мини-апп не найден');
+    const code = bot.miniapp_code;
+    const hasSdk = code.includes('/miniapp-sdk.js');
+    const inject = '<script>window.__BMA_BOOT__=' + JSON.stringify({ username: bot.username }) + ';</script>' +
+      (hasSdk ? '' : '\n<script src="/miniapp-sdk.js"></script>');
+    const html = code.includes('</body>') ? code.replace('</body>', inject + '\n</body>') : code + inject;
+    return { html, username: bot.username, title: bot.miniapp_title || bot.display_name };
+  });
+
   /* ---------- точка входа ---------- */
 
   async function request(path, { method = 'GET', headers = {}, body } = {}) {
@@ -945,7 +1280,7 @@
       const m = r.re.exec(url.pathname);
       if (!m) continue;
       try {
-        const data = await r.fn({ params: m.slice(1).map(Number), query, body: payload, me, file });
+        const data = await r.fn({ params: m.slice(1).map(v => (/^\d+$/.test(v) ? Number(v) : v)), query, body: payload, me, file });
         return { status: 200, data: rewrite(data) };
       } catch (err) {
         if (err && err.__status) return { status: err.__status, data: { error: err.message } };

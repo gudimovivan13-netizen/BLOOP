@@ -116,6 +116,9 @@ function avatarEl(user, small = false) {
     img.src = user.avatar;
     img.alt = '';
     el.appendChild(img);
+  } else if (user?.is_bot) {
+    el.classList.add('bot');
+    el.innerHTML = BLOOP_ICONS.I.robot;
   } else {
     el.textContent = initials(user?.display_name || user?.username);
   }
@@ -469,6 +472,7 @@ async function openChat(id) {
   $('#chat-avatar').replaceWith(cav);
 
   renderChatStatus(chat);
+  setupBotChat(chat);
   updateTypingBar();
 
   chat.unread = 0;
@@ -482,6 +486,10 @@ async function openChat(id) {
 function renderChatStatus(chat) {
   const st = $('#chat-status');
   st.classList.remove('online');
+  if (chat.peer?.is_bot) {
+    st.textContent = 'бот';
+    return;
+  }
   if (chat.type === 'group') {
     st.textContent = `группа · ${chat.members_count} участников`;
     return;
@@ -581,6 +589,40 @@ function msgEl(m) {
       chips.appendChild(chip);
     }
     el.appendChild(chips);
+  }
+
+
+  // инлайн-клавиатура бота
+  if (m.kb) {
+    const kbBox = document.createElement('div');
+    kbBox.className = 'kb';
+    for (const row of m.kb) {
+      const rowEl = document.createElement('div');
+      rowEl.className = 'kb-row';
+      for (const b of row) {
+        const btn = document.createElement('button');
+        btn.className = 'kb-btn';
+        btn.textContent = b.t;
+        btn.addEventListener('click', async () => {
+          try {
+            const res = await api(`/api/chats/${m.chat_id}/callback`, { method: 'POST', body: { data: b.d, message_id: m.id } });
+            const list = messagesByChat.get(m.chat_id) || [];
+            for (const bm of res.bot_messages || []) {
+              if (!list.some(x => x.id === bm.id)) {
+                list.push(bm);
+                messagesByChat.set(m.chat_id, list);
+                if (m.chat_id === currentChatId) appendMessage(bm);
+              }
+            }
+          } catch (err) {
+            toast('Ошибка: ' + err.message);
+          }
+        });
+        rowEl.appendChild(btn);
+      }
+      kbBox.appendChild(rowEl);
+    }
+    el.appendChild(kbBox);
   }
 
   const foot = document.createElement('div');
@@ -822,15 +864,23 @@ async function sendMessage() {
   clearPendingImage();
   clearReply();
   try {
-    const { message } = await api(`/api/chats/${currentChatId}/messages`, {
+    const data = await api(`/api/chats/${currentChatId}/messages`, {
       method: 'POST',
       body: { text, image, voice: voice?.dataUrl || null, reply_to: replyTo },
     });
+    const message = data.message;
     const list = messagesByChat.get(currentChatId) || [];
     if (!list.some(x => x.id === message.id)) { // событие из сокета могло прийти раньше ответа
       list.push(message);
       messagesByChat.set(currentChatId, list);
       appendMessage(message);
+    }
+    // локальный режим: ответы бота приходят прямо в ответе маршрута
+    for (const bm of data.bot_messages || []) {
+      if (!list.some(x => x.id === bm.id)) {
+        list.push(bm);
+        appendMessage(bm);
+      }
     }
     refreshChats();
   } catch (err) {
@@ -2315,6 +2365,12 @@ function renderProfile() {
     ai.addEventListener('click', openAiModal);
     actions.appendChild(ai);
 
+    const botsBtn = document.createElement('button');
+    botsBtn.className = 'ghost-btn';
+    botsBtn.innerHTML = BLOOP_ICONS.I.code + '<span>Мои боты</span>';
+    botsBtn.addEventListener('click', openMyBots);
+    actions.appendChild(botsBtn);
+
     const edit = document.createElement('button');
     edit.className = 'primary';
     edit.textContent = 'Редактировать';
@@ -3165,3 +3221,417 @@ async function renderBadgesInto(container, userId) {
   }
 })();
 
+/* =====================================================================
+   Боты и мини-аппы (v6): каталог, «Мои боты», просмотрщик мини-аппов
+   ===================================================================== */
+
+let botsTab = 'people';
+let botsCatalog = [];
+let myBots = [];
+let currentBot = null;       // бот, открытый в редакторе
+let currentChatPeer = null;  // собеседник открытого чата
+let miniappBlobUrl = null;
+
+function setBotsTab(t) {
+  botsTab = t;
+  $('#tab-people').classList.toggle('active', t === 'people');
+  $('#tab-bots').classList.toggle('active', t === 'bots');
+  $('#search-results').classList.toggle('hidden', t !== 'people' || !$('#search').value.trim());
+  $('#bots-list').classList.toggle('hidden', t !== 'bots');
+  if (t === 'people') $('#search').placeholder = 'Найти человека или бота…';
+  else $('#search').placeholder = 'Найти бота…';
+}
+
+$('#tab-people').addEventListener('click', () => setBotsTab('people'));
+$('#tab-bots').addEventListener('click', () => { setBotsTab('bots'); loadBotsCatalog(); });
+$('#search').addEventListener('input', () => {
+  if (botsTab === 'bots') {
+    $('#search-results').classList.add('hidden');
+    renderBotsCatalog();
+  }
+});
+
+async function loadBotsCatalog() {
+  try {
+    botsCatalog = (await api('/api/bots/public')).bots;
+  } catch { botsCatalog = []; }
+  renderBotsCatalog();
+}
+
+function renderBotsCatalog() {
+  const box = $('#bots-list');
+  box.replaceChildren();
+  const label = document.createElement('div');
+  label.className = 'search-label';
+  label.textContent = 'Боты BLOOP';
+  box.appendChild(label);
+
+  const q = $('#search').value.trim().toLowerCase();
+  const list = botsCatalog.filter(b => !q
+    || b.username.includes(q)
+    || b.display_name.toLowerCase().includes(q)
+    || (b.description || '').toLowerCase().includes(q));
+
+  if (!list.length) {
+    const none = document.createElement('div');
+    none.className = 'search-label';
+    none.textContent = 'Ботов пока нет — создай своего в профиле, раздел «Мои боты»';
+    box.appendChild(none);
+    return;
+  }
+  for (const b of list) {
+    const row = document.createElement('div');
+    row.className = 'user-row bot-row';
+    const av = avatarEl({ id: b.user_id, display_name: b.display_name, is_bot: true }, true);
+    av.querySelector('.dot')?.remove();
+    row.appendChild(av);
+    const col = document.createElement('div');
+    col.className = 'bot-col';
+    const name = document.createElement('span');
+    name.innerHTML = `${b.display_name} <span class="dim">@${b.username}</span>`;
+    col.appendChild(name);
+    if (b.description) {
+      const desc = document.createElement('span');
+      desc.className = 'dim small-text';
+      desc.textContent = b.description;
+      col.appendChild(desc);
+    }
+    row.appendChild(col);
+    if (b.has_miniapp) {
+      const chip = document.createElement('span');
+      chip.className = 'mini-chip';
+      chip.innerHTML = BLOOP_ICONS.I.app + '<span>апп</span>';
+      row.appendChild(chip);
+    }
+    row.addEventListener('click', () => startBotChat(b));
+    box.appendChild(row);
+  }
+}
+
+async function startBotChat(bot) {
+  try {
+    const { chat_id } = await api('/api/chats', { method: 'POST', body: { type: 'direct', user_id: bot.user_id } });
+    $('#search').value = '';
+    $('#search').dispatchEvent(new Event('input'));
+    await refreshChats();
+    showPage('messages');
+    openChat(chat_id);
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function setupBotChat(chat) {
+  currentChatPeer = chat.peer || null;
+  const isBot = !!chat.peer?.is_bot;
+  $('#chat-miniapp').classList.toggle('hidden', !isBot || !chat.peer?.has_miniapp);
+}
+
+$('#chat-miniapp').addEventListener('click', () => {
+  if (currentChatPeer?.is_bot) openMiniApp(currentChatPeer);
+});
+
+/* ---------- просмотрщик мини-аппов ---------- */
+
+async function openMiniApp(peer) {
+  $('#miniapp-title').textContent = peer.display_name || ('@' + peer.username);
+  $('#miniapp-icon').innerHTML = BLOOP_ICONS.I.robot;
+  const frame = $('#miniapp-frame');
+  try {
+    if (LOCAL_MODE) {
+      const data = await api(`/api/miniapp/${peer.username}/html`);
+      if (miniappBlobUrl) URL.revokeObjectURL(miniappBlobUrl);
+      miniappBlobUrl = URL.createObjectURL(new Blob([data.html], { type: 'text/html' }));
+      frame.src = miniappBlobUrl;
+    } else {
+      frame.src = `/miniapp/${peer.username}`;
+    }
+    $('#miniapp-modal').classList.remove('hidden');
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+function closeMiniApp() {
+  $('#miniapp-modal').classList.add('hidden');
+  $('#miniapp-frame').src = 'about:blank';
+  if (miniappBlobUrl) {
+    URL.revokeObjectURL(miniappBlobUrl);
+    miniappBlobUrl = null;
+  }
+}
+
+$('#miniapp-close').addEventListener('click', closeMiniApp);
+window.addEventListener('message', (e) => {
+  if (e.data?.type === 'bma:close') closeMiniApp();
+});
+
+/* ---------- «Мои боты» (BotFather внутри BLOOP) ---------- */
+
+$('#mybots-close').addEventListener('click', () => $('#mybots-modal').classList.add('hidden'));
+$('#bot-editor-back').addEventListener('click', () => showMyBotsList());
+
+async function openMyBots() {
+  $('#mybots-modal').classList.remove('hidden');
+  await reloadMyBots();
+  showMyBotsList();
+}
+
+async function reloadMyBots() {
+  try {
+    myBots = (await api('/api/bots/mine')).bots;
+  } catch { myBots = []; }
+}
+
+function showMyBotsList() {
+  currentBot = null;
+  $('#mybots-list-view').classList.remove('hidden');
+  $('#bot-editor').classList.add('hidden');
+  $('#mybots-title').textContent = 'Мои боты';
+  const box = $('#mybots-list');
+  box.replaceChildren();
+  if (!myBots.length) {
+    const none = document.createElement('div');
+    none.className = 'search-label';
+    none.textContent = 'Ботов пока нет. Создай первого — он сразу начнёт отвечать (шаблон «Эхо» уже внутри).';
+    box.appendChild(none);
+    return;
+  }
+  for (const b of myBots) {
+    const row = document.createElement('div');
+    row.className = 'user-row bot-row';
+    const av = avatarEl({ id: b.user_id, display_name: b.display_name, is_bot: true }, true);
+    av.querySelector('.dot')?.remove();
+    row.appendChild(av);
+    const col = document.createElement('div');
+    col.className = 'bot-col';
+    const name = document.createElement('span');
+    name.innerHTML = `${b.display_name} <span class="dim">@${b.username}</span>` + (b.enabled ? '' : ' <span class="dim">— выключен</span>');
+    col.appendChild(name);
+    const stat = document.createElement('span');
+    stat.className = 'dim small-text';
+    stat.textContent = `${b.msg_count} сообщений${b.has_miniapp ? ' · есть мини-апп' : ''}`;
+    col.appendChild(stat);
+    row.appendChild(col);
+    row.addEventListener('click', () => openBotEditor(b));
+    box.appendChild(row);
+  }
+}
+
+$('#bot-create').addEventListener('click', async () => {
+  const name = $('#bot-new-name').value.trim();
+  const username = $('#bot-new-username').value.trim();
+  const description = $('#bot-new-desc').value.trim();
+  if (!username) { alert('Придумай юзернейм бота'); return; }
+  try {
+    const { bot } = await api('/api/bots', { method: 'POST', body: { display_name: name, username, description } });
+    $('#bot-new-name').value = '';
+    $('#bot-new-username').value = '';
+    $('#bot-new-desc').value = '';
+    await reloadMyBots();
+    openBotEditor(bot);
+    toast(`Бот создан. Юзернейм: @${bot.username}`);
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+const botTabs = document.querySelectorAll('.seg-tab');
+botTabs.forEach(t => t.addEventListener('click', () => {
+  botTabs.forEach(x => x.classList.toggle('active', x === t));
+  for (const id of ['info', 'code', 'miniapp']) {
+    $(`#btab-${id}`).classList.toggle('hidden', t.dataset.bt !== id);
+  }
+}));
+
+function fillBotEditor(bot) {
+  currentBot = bot;
+  $('#mybots-list-view').classList.add('hidden');
+  $('#bot-editor').classList.remove('hidden');
+  $('#mybots-title').textContent = 'Редактор бота';
+  $('#bot-editor-name').textContent = bot.display_name;
+  $('#bot-editor-username').textContent = '@' + bot.username;
+  $('#bot-editor-avatar').innerHTML = BLOOP_ICONS.I.robot;
+  $('#bot-name').value = bot.display_name;
+  $('#bot-desc').value = bot.description || '';
+  $('#bot-enabled').checked = !!bot.enabled;
+  $('#bot-token').textContent = bot.token;
+  $('#bot-code').value = bot.code || '';
+  $('#bot-miniapp-enabled').checked = !!bot.miniapp?.enabled;
+  $('#bot-miniapp-title').value = bot.miniapp?.title || '';
+  $('#bot-miniapp-code').value = bot.miniapp?.code || '';
+  $('#bot-stats').textContent = `Сообщений от бота: ${bot.msg_count}`;
+  $('#bot-doc-hint').textContent = window.BLOOP_BOT_DOC || '';
+  renderBotLogs(bot.logs || []);
+}
+
+function renderBotLogs(logs) {
+  const box = $('#bot-logs');
+  box.replaceChildren();
+  if (!logs.length) {
+    const dim = document.createElement('div');
+    dim.className = 'log-line dim';
+    dim.textContent = 'Пока пусто';
+    box.appendChild(dim);
+    return;
+  }
+  for (const l of [...logs].slice(-25)) {
+    const line = document.createElement('div');
+    line.className = 'log-line ' + (l.level || 'log');
+    const time = new Date(l.t || Date.now()).toLocaleTimeString('ru-RU');
+    line.textContent = `[${time}] ${l.text}`;
+    box.appendChild(line);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+async function refreshCurrentBotLogs() {
+  await reloadMyBots();
+  const b = myBots.find(x => x.id === currentBot?.id);
+  if (b) renderBotLogs(b.logs || []);
+}
+
+function openBotEditor(bot) {
+  fillBotEditor(bot);
+  // вкладка «Инфо» по умолчанию
+  botTabs.forEach(x => x.classList.toggle('active', x.dataset.bt === 'info'));
+  for (const id of ['info', 'code', 'miniapp']) {
+    $(`#btab-${id}`).classList.toggle('hidden', id !== 'info');
+  }
+}
+
+$('#bot-save-info').addEventListener('click', async () => {
+  if (!currentBot) return;
+  try {
+    const { bot } = await api(`/api/bots/${currentBot.id}`, {
+      method: 'PUT',
+      body: {
+        display_name: $('#bot-name').value.trim(),
+        description: $('#bot-desc').value.trim(),
+        enabled: $('#bot-enabled').checked,
+      },
+    });
+    currentBot = bot;
+    await reloadMyBots();
+    fillBotEditor(bot);
+    toast('Сохранено');
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+$('#bot-retoken').addEventListener('click', async () => {
+  if (!currentBot) return;
+  if (!confirm('Перевыпустить токен? Старый перестанет работать.')) return;
+  try {
+    const { token } = await api(`/api/bots/${currentBot.id}/retoken`, { method: 'POST' });
+    currentBot.token = token;
+    $('#bot-token').textContent = token;
+    toast('Токен обновлён');
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+$('#bot-copy-token').addEventListener('click', async () => {
+  const t = $('#bot-token').textContent;
+  try {
+    await navigator.clipboard.writeText(t);
+    toast('Токен скопирован');
+  } catch {
+    alert('Скопируй вручную: ' + t);
+  }
+});
+
+$('#bot-delete').addEventListener('click', async () => {
+  if (!currentBot) return;
+  if (!confirm(`Удалить бота «${currentBot.display_name}»? Чаты с ним останутся, но бот замолчит.`)) return;
+  try {
+    await api(`/api/bots/${currentBot.id}`, { method: 'DELETE' });
+    await reloadMyBots();
+    showMyBotsList();
+    toast('Бот удалён');
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+/* редактор кода */
+
+const templateSel = $('#bot-template');
+if (templateSel && Array.isArray(window.BLOOP_BOT_TEMPLATES)) {
+  for (const t of window.BLOOP_BOT_TEMPLATES) {
+    const opt = document.createElement('option');
+    opt.value = t.id;
+    opt.textContent = t.name;
+    templateSel.appendChild(opt);
+  }
+}
+
+$('#bot-template').addEventListener('change', () => {
+  const t = (window.BLOOP_BOT_TEMPLATES || []).find(x => x.id === templateSel.value);
+  if (t && confirm('Вставить код шаблона «' + t.name + '» вместо текущего?')) {
+    $('#bot-code').value = t.code;
+  }
+});
+
+$('#bot-save-code').addEventListener('click', async () => {
+  if (!currentBot) return;
+  try {
+    const { bot } = await api(`/api/bots/${currentBot.id}`, {
+      method: 'PUT',
+      body: { code: $('#bot-code').value },
+    });
+    currentBot = bot;
+    await reloadMyBots();
+    renderBotLogs(bot.logs || []);
+    toast('Код сохранён — бот перезапущен');
+  } catch (err) {
+    alert('Ошибка: ' + err.message);
+  }
+});
+
+/* мини-апп */
+
+$('#bot-miniapp-template').addEventListener('click', () => {
+  if (window.BLOOP_MINIAPP_TEMPLATE) {
+    $('#bot-miniapp-code').value = window.BLOOP_MINIAPP_TEMPLATE;
+  }
+});
+
+$('#bot-save-miniapp').addEventListener('click', async () => {
+  if (!currentBot) return;
+  try {
+    const { bot } = await api(`/api/bots/${currentBot.id}`, {
+      method: 'PUT',
+      body: {
+        miniapp_enabled: $('#bot-miniapp-enabled').checked,
+        miniapp_title: $('#bot-miniapp-title').value.trim(),
+        miniapp_code: $('#bot-miniapp-code').value,
+      },
+    });
+    currentBot = bot;
+    await reloadMyBots();
+    toast('Мини-апп сохранён');
+  } catch (err) {
+    alert('Ошибка: ' + err.message);
+  }
+});
+
+$('#bot-open-miniapp').addEventListener('click', async () => {
+  if (!currentBot) return;
+  try {
+    // сохраняем черновик, чтобы предпросмотр показал актуальный код
+    await api(`/api/bots/${currentBot.id}`, {
+      method: 'PUT',
+      body: {
+        miniapp_enabled: $('#bot-miniapp-enabled').checked,
+        miniapp_title: $('#bot-miniapp-title').value.trim(),
+        miniapp_code: $('#bot-miniapp-code').value,
+      },
+    });
+    await openMiniApp({ username: currentBot.username, display_name: $('#bot-miniapp-title').value.trim() || currentBot.display_name });
+  } catch (err) {
+    alert('Ошибка: ' + err.message);
+  }
+});

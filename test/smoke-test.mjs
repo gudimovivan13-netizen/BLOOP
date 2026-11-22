@@ -444,6 +444,113 @@ async function main() {
     sockB2.disconnect();
     sockA2.disconnect();
 
+    console.log('\n— Платформа ботов и мини-аппов');
+    const botNew = await api('/api/bots', {
+      method: 'POST', token: tokA,
+      body: { username: 'smoke_helper', display_name: 'Смок-бот', description: 'тестовый бот' },
+    });
+    const bot = botNew.data.bot;
+    check('бот создаётся с токеном и эхо-кодом',
+      botNew.status === 200 && bot?.token?.startsWith('bta_') && (bot?.code || '').includes('ctx.reply'));
+    check('дубликат юзернейма бота отклоняется',
+      (await api('/api/bots', { method: 'POST', token: tokA, body: { username: 'smoke_helper' } })).status === 409);
+    const cat = await api('/api/bots/public', { token: tokB });
+    check('бот виден в публичном каталоге', cat.data.bots?.some(b => b.id === bot.id));
+
+    // чат с ботом: start-событие запускает эхо-бота
+    const botChat = await api('/api/chats', { method: 'POST', token: tokB, body: { type: 'direct', user_id: bot.user_id } });
+    check('чат с ботом открывается', botChat.status === 200 && !!botChat.data.chat_id);
+    let botMsgs = null;
+    for (let i = 0; i < 10; i++) {
+      await sleep(300);
+      botMsgs = (await api(`/api/chats/${botChat.data.chat_id}/messages`, { token: tokB })).data.messages;
+      if (botMsgs?.some(m => m.sender_id === bot.user_id)) break;
+    }
+    check('эхо-бот приветствует при старте (событие start)',
+      botMsgs?.some(m => m.sender_id === bot.user_id && m.text.includes('эхо-бот')));
+
+    // сообщение -> ответ из песочницы
+    await api(`/api/chats/${botChat.data.chat_id}/messages`, { method: 'POST', token: tokB, body: { text: '/echo привет движок' } });
+    let echoOk = false;
+    for (let i = 0; i < 10 && !echoOk; i++) {
+      await sleep(300);
+      botMsgs = (await api(`/api/chats/${botChat.data.chat_id}/messages`, { token: tokB })).data.messages;
+      echoOk = botMsgs?.some(m => m.text.includes('Ты написал: /echo привет движок')) || false;
+    }
+    check('эхо-бот отвечает из песочницы vm', echoOk);
+
+    // смена кода: клавиатура + постоянное состояние через колбэк
+    const putCode = await api(`/api/bots/${bot.id}`, {
+      method: 'PUT', token: tokA,
+      body: { code: "if (ctx.event === 'callback' && ctx.callback.data === 'plus') { ctx.state.set('n', Number(ctx.state.get('n', 0)) + 1); ctx.reply('n=' + ctx.state.get('n')); }" },
+    });
+    check('код бота обновляется', putCode.status === 200);
+    const cb = await api(`/api/chats/${botChat.data.chat_id}/callback`, {
+      method: 'POST', token: tokB, body: { data: 'plus', message_id: botMsgs.at(-1).id },
+    });
+    check('колбэк клавиатуры принят', cb.status === 200);
+    let cbOk = false;
+    for (let i = 0; i < 10 && !cbOk; i++) {
+      await sleep(300);
+      botMsgs = (await api(`/api/chats/${botChat.data.chat_id}/messages`, { token: tokB })).data.messages;
+      cbOk = botMsgs?.some(m => m.text === 'n=1') || false;
+    }
+    check('состояние бота сохраняется (n=1)', cbOk);
+    const cb2 = await api(`/api/chats/${botChat.data.chat_id}/callback`, { method: 'POST', token: tokB, body: { data: 'plus' } });
+    check('повторный колбэк принят', cb2.status === 200);
+    let n2 = false;
+    for (let i = 0; i < 10 && !n2; i++) {
+      await sleep(300);
+      botMsgs = (await api(`/api/chats/${botChat.data.chat_id}/messages`, { token: tokB })).data.messages;
+      n2 = botMsgs?.some(m => m.text === 'n=2') || false;
+    }
+    check('состояние накапливается (n=2)', n2);
+
+    // доступ к редактированию: чужой владелец не может
+    check('чужой бот не редактируется',
+      (await api(`/api/bots/${bot.id}`, { method: 'PUT', token: tokB, body: { display_name: 'взлом' } })).status === 403);
+
+    // Bot HTTP API по токену
+    check('getMe по токену бота',
+      (await api('/api/botapi/getMe', { token: bot.token })).data.bot?.username === 'bot_smoke_helper');
+    check('неверный токен бота отклоняется',
+      (await api('/api/botapi/getMe', { token: 'bta_wrong' })).status === 401);
+    const sm = await api('/api/botapi/sendMessage', {
+      method: 'POST', token: bot.token,
+      body: { chat_id: botChat.data.chat_id, text: 'Сообщение по API', keyboard: [[{ t: 'Кнопка', d: 'kb_data' }]] },
+    });
+    check('sendMessage с клавиатурой по токену',
+      sm.status === 200 && sm.data.message?.kb?.[0]?.[0]?.d === 'kb_data');
+    await api(`/api/chats/${botChat.data.chat_id}/messages`, { method: 'POST', token: tokB, body: { text: 'апдейт для очереди' } });
+    const upd = await api('/api/botapi/getUpdates?timeout=3', { token: bot.token });
+    check('getUpdates возвращает очередь событий',
+      upd.data.updates?.some(u => u.type === 'message' && u.text === 'апдейт для очереди') &&
+      upd.data.updates?.some(u => u.type === 'callback'));
+
+    // мини-апп: включение, раздача, событие в бота
+    const mini = await api(`/api/bots/${bot.id}`, {
+      method: 'PUT', token: tokA,
+      body: {
+        miniapp_enabled: true, miniapp_title: 'Тест-апп',
+        miniapp_code: '<!doctype html><html><head><title>t</title></head><body><h1>Привет</h1><script src="/miniapp-sdk.js"></script></body></html>',
+      },
+    });
+    check('мини-апп включается у бота', mini.status === 200 && mini.data.bot?.has_miniapp === true);
+    const page = await fetch(`${BASE}/miniapp/bot_smoke_helper`);
+    const html = await page.text();
+    check('страница мини-аппа раздаётся с SDK и boot',
+      page.status === 200 && html.includes('/miniapp-sdk.js') && html.includes('__BMA_BOOT__'));
+    check('несуществующий мини-апп даёт 404', (await fetch(`${BASE}/miniapp/bot_nope`)).status === 404);
+    const mst = await api('/api/miniapp/bot_smoke_helper/state', { token: tokB });
+    check('состояние мини-аппа читается', mst.status === 200 && mst.data.state?.n === 2);
+    const ev = await api('/api/miniapp/bot_smoke_helper/data', { method: 'POST', token: tokB, body: { data: { action: 'ping' } } });
+    check('событие мини-аппа принимается', ev.status === 200 && ev.data.ok === true);
+    // чат для мини-аппа создался у пользователя B
+    const botChatsB = await api('/api/chats', { token: tokB });
+    check('чат с ботом есть в списке чатов',
+      botChatsB.data.chats?.some(c => c.peer?.is_bot && c.peer?.username === 'bot_smoke_helper'));
+
+
 
   } finally {
     server.kill();

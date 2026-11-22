@@ -198,8 +198,13 @@
               <span class="side-title"><span class="section-badge b-chat"><svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 3c5 0 9 3.6 9 8s-4 8-9 8c-1 0-2-.1-2.9-.4L4 21l1.6-4.1C4 15.5 3 13.4 3 11c0-4.4 4-8 9-8z"/></svg></span>Чаты</span>
               <button id="btn-group" class="ghost-btn" title="Новая группа">+ Группа</button>
             </header>
-            <input id="search" type="search" placeholder="Найти человека…">
+            <div class="chat-tabs">
+              <button type="button" id="tab-people" class="tab active">Люди</button>
+              <button type="button" id="tab-bots" class="tab">Боты</button>
+            </div>
+            <input id="search" type="search" placeholder="Найти человека или бота…">
             <div id="search-results" class="search-results hidden"></div>
+            <div id="bots-list" class="search-results hidden"></div>
             <nav id="chat-list" class="chat-list"></nav>
           </aside>
 
@@ -219,6 +224,7 @@
                   <div id="chat-name"></div>
                   <div id="chat-status" class="chat-status"></div>
                 </div>
+                <button id="chat-miniapp" class="ghost-btn hidden">Мини-апп</button>
               </header>
 
               <div id="messages" class="messages"></div>
@@ -491,12 +497,108 @@
     </div>
   </div>
 
+  <!-- Мои боты: платформа ботов и мини-аппов -->
+  <div id="mybots-modal" class="modal hidden">
+    <div class="modal-card mybots-card">
+      <header class="comments-head">
+        <h3 id="mybots-title">Мои боты</h3>
+        <button id="mybots-close" class="icon-btn" title="Закрыть"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+      </header>
+
+      <div id="mybots-list-view">
+        <div id="mybots-list" class="mybots-list"></div>
+        <div class="set-label">Создать нового бота</div>
+        <input id="bot-new-name" type="text" placeholder="Название бота (например, Мой помощник)" maxlength="40">
+        <input id="bot-new-username" type="text" placeholder="Юзернейм: my_helper — станет bot_my_helper" maxlength="24">
+        <input id="bot-new-desc" type="text" placeholder="Описание (необязательно)" maxlength="300">
+        <div class="modal-actions">
+          <button id="bot-create" class="primary">Создать бота</button>
+        </div>
+        <div class="set-hint">Бот сразу появляется в разделе «Боты» при создании чата. Код и мини-апп редактируются после создания.</div>
+      </div>
+
+      <div id="bot-editor" class="hidden">
+        <div class="bot-editor-head">
+          <span id="bot-editor-avatar" class="avatar small bot"></span>
+          <div class="bot-editor-id">
+            <div id="bot-editor-name" class="bot-editor-name"></div>
+            <div id="bot-editor-username" class="bot-editor-username"></div>
+          </div>
+          <button id="bot-editor-back" class="ghost-btn">К списку</button>
+        </div>
+        <div class="seg-tabs">
+          <button type="button" class="seg-tab active" data-bt="info">Инфо</button>
+          <button type="button" class="seg-tab" data-bt="code">Код</button>
+          <button type="button" class="seg-tab" data-bt="miniapp">Мини-апп</button>
+        </div>
+
+        <div id="btab-info" class="btab">
+          <div class="set-label">Название</div>
+          <input id="bot-name" type="text" maxlength="40">
+          <div class="set-label">Описание</div>
+          <input id="bot-desc" type="text" maxlength="300">
+          <label class="check-row"><input id="bot-enabled" type="checkbox"> Включён — отвечает в чатах и виден в каталоге</label>
+          <div class="set-label">Токен для Bot HTTP API (getUpdates / sendMessage)</div>
+          <div class="token-box"><code id="bot-token"></code></div>
+          <div class="modal-actions">
+            <button id="bot-retoken" class="ghost-btn">Перевыпустить</button>
+            <button id="bot-copy-token" class="ghost-btn">Копировать</button>
+          </div>
+          <div class="set-hint" id="bot-stats"></div>
+          <div class="modal-actions">
+            <button id="bot-save-info" class="primary">Сохранить</button>
+            <button id="bot-delete" class="ghost-btn danger">Удалить бота</button>
+          </div>
+        </div>
+
+        <div id="btab-code" class="btab hidden">
+          <div class="set-label">Шаблон</div>
+          <select id="bot-template"></select>
+          <div class="set-label">Код бота (JavaScript, доступен объект ctx)</div>
+          <textarea id="bot-code" class="code-area" rows="14" spellcheck="false"></textarea>
+          <div class="modal-actions">
+            <button id="bot-save-code" class="primary">Сохранить и перезапустить</button>
+          </div>
+          <div class="set-label">Логи (console.log бота)</div>
+          <div id="bot-logs" class="logs-box"></div>
+          <div class="set-hint" id="bot-doc-hint"></div>
+        </div>
+
+        <div id="btab-miniapp" class="btab hidden">
+          <label class="check-row"><input id="bot-miniapp-enabled" type="checkbox"> Мини-апп включён — кнопка в шапке чата с ботом</label>
+          <div class="set-label">Заголовок</div>
+          <input id="bot-miniapp-title" type="text" maxlength="60" placeholder="Мой мини-апп">
+          <div class="set-label">Код страницы (HTML + JS, SDK: window.BMA)</div>
+          <textarea id="bot-miniapp-code" class="code-area" rows="14" spellcheck="false"></textarea>
+          <div class="modal-actions">
+            <button id="bot-miniapp-template" class="ghost-btn">Вставить шаблон</button>
+            <button id="bot-save-miniapp" class="primary">Сохранить</button>
+            <button id="bot-open-miniapp" class="ghost-btn">Предпросмотр</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Мини-апп: полноэкранный просмотрщик -->
+  <div id="miniapp-modal" class="modal miniapp-modal hidden">
+    <div class="miniapp-card">
+      <header class="miniapp-head">
+        <span id="miniapp-icon" class="avatar small bot"></span>
+        <b id="miniapp-title">Мини-апп</b>
+        <button id="miniapp-close" class="icon-btn" title="Закрыть"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+      </header>
+      <iframe id="miniapp-frame" title="Мини-апп" sandbox="allow-scripts allow-same-origin allow-forms"></iframe>
+    </div>
+  </div>
+
   <div id="toasts" class="toasts"></div>
 
   <script src="/config.js"></script>
   <script src="/local-server.js"></script>
   <script src="/socket.io/socket.io.js"></script>
   <script src="/icons.js"></script>
+  <script src="/bot-templates.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

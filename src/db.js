@@ -57,6 +57,7 @@ if (!userCols.includes('bio')) db.exec("ALTER TABLE users ADD COLUMN bio TEXT DE
 if (!userCols.includes('phone')) db.exec('ALTER TABLE users ADD COLUMN phone TEXT');
 if (!userCols.includes('email')) db.exec('ALTER TABLE users ADD COLUMN email TEXT');
 if (!userCols.includes('email_verified')) db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0');
+if (!userCols.includes('is_bot')) db.exec('ALTER TABLE users ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS email_codes (
@@ -92,6 +93,7 @@ CREATE TABLE IF NOT EXISTS story_views (
 const msgCols = db.prepare('PRAGMA table_info(messages)').all().map(c => c.name);
 if (!msgCols.includes('media_kind')) db.exec("ALTER TABLE messages ADD COLUMN media_kind TEXT DEFAULT 'image'");
 if (!msgCols.includes('reply_to')) db.exec('ALTER TABLE messages ADD COLUMN reply_to INTEGER');
+if (!msgCols.includes('kb')) db.exec('ALTER TABLE messages ADD COLUMN kb TEXT'); // инлайн-клавиатура ботов
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS post_reactions (
@@ -117,6 +119,14 @@ CREATE TABLE IF NOT EXISTS msg_reactions (
 `);
 
 
+function parseKb(raw) {
+  if (!raw) return null;
+  try {
+    const kb = JSON.parse(raw);
+    return Array.isArray(kb) && kb.length ? kb : null;
+  } catch { return null; }
+}
+
 export function createUser({ username, displayName, passwordHash, phone = null, email = null }) {
   const { lastInsertRowid } = db.prepare(
     'INSERT INTO users (username, display_name, password_hash, phone, email, email_verified) VALUES (?, ?, ?, ?, ?, ?)'
@@ -126,7 +136,7 @@ export function createUser({ username, displayName, passwordHash, phone = null, 
 
 export function getUserById(id) {
   return db.prepare(`
-    SELECT id, username, display_name, avatar, bio, created_at, phone, email, email_verified
+    SELECT id, username, display_name, avatar, bio, created_at, phone, email, email_verified, is_bot
     FROM users WHERE id = ?
   `).get(id) || null;
 }
@@ -159,7 +169,7 @@ export function deleteEmailCode(email) {
 }
 
 export function listUsers() {
-  return db.prepare('SELECT id, username, display_name, avatar, email_verified FROM users ORDER BY username COLLATE NOCASE').all();
+  return db.prepare('SELECT id, username, display_name, avatar, email_verified FROM users WHERE is_bot = 0 ORDER BY username COLLATE NOCASE').all();
 }
 
 export function createChat({ type, name = null, createdBy, memberIds }) {
@@ -191,15 +201,15 @@ export function chatMemberIds(chatId) {
   return db.prepare('SELECT user_id FROM chat_members WHERE chat_id = ?').all(chatId).map(r => r.user_id);
 }
 
-export function insertMessage(chatId, senderId, text, image, mediaKind = 'image', replyTo = null) {
+export function insertMessage(chatId, senderId, text, image, mediaKind = 'image', replyTo = null, kb = null) {
   const { lastInsertRowid } = db.prepare(
-    'INSERT INTO messages (chat_id, sender_id, text, image, media_kind, reply_to) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(chatId, senderId, text, image, mediaKind, replyTo);
+    'INSERT INTO messages (chat_id, sender_id, text, image, media_kind, reply_to, kb) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(chatId, senderId, text, image, mediaKind, replyTo, kb == null ? null : JSON.stringify(kb));
   return getMessageById(Number(lastInsertRowid));
 }
 
 const MSG_SELECT = `
-  SELECT m.id, m.chat_id, m.sender_id, m.text, m.image, m.media_kind, m.created_at, m.reply_to,
+  SELECT m.id, m.chat_id, m.sender_id, m.text, m.image, m.media_kind, m.created_at, m.reply_to, m.kb,
          u.username, u.display_name,
          r.id AS r_id, r.text AS r_text, r.image AS r_image, r.media_kind AS r_kind, r.sender_id AS r_sender,
          ru.display_name AS r_author
@@ -235,6 +245,7 @@ function msgRowOut(row, viewerId) {
     created_at: row.created_at,
     username: row.username,
     display_name: row.display_name,
+    kb: parseKb(row.kb),
     ...messageReactions(row.id, viewerId),
   };
   if (row.r_id) {
@@ -291,7 +302,9 @@ export function listChatsForUser(userId) {
     'SELECT COUNT(*) AS n FROM messages WHERE chat_id = ? AND id > ? AND sender_id <> ?'
   );
   const peer = db.prepare(`
-    SELECT u.id, u.username, u.display_name, u.avatar FROM chat_members cm
+    SELECT u.id, u.username, u.display_name, u.avatar, u.is_bot,
+           (SELECT COUNT(*) FROM bots b WHERE b.user_id = u.id AND b.enabled = 1 AND b.deleted = 0 AND b.miniapp_enabled = 1) AS has_miniapp
+    FROM chat_members cm
     JOIN users u ON u.id = cm.user_id
     WHERE cm.chat_id = ? AND cm.user_id <> ?
   `);
@@ -785,10 +798,147 @@ export function getUserBadges(userId) {
     b('clipper', '🎬', 'Клипмейкер', 'Снять первый клип', clips, 1),
     b('director', '🎥', 'Режиссёр', 'Загрузить своё видео', videos, 1),
     b('voice', '🎙', 'Голос BLOOP', 'Отправить голосовое в чате', voices, 1),
-    b('loved_50', '❤️', 'Народный любимец', 'Собрать 50 ❤️ на своих публикациях', likesReceived, 50),
+    b('loved_50', '❤️', 'Народный любимец', 'Собрать 50 лайков на своих публикациях', likesReceived, 50),
     b('viral_1000', '🔥', 'Вирусный', 'Набрать 1000 просмотров на одной публикации', maxViews, 1000),
     b('chatty', '💬', 'Трибуна', 'Поучаствовать в 5 чатах', chats, 5),
     b('moment', '✨', 'Мгновение', 'Выложить первую историю', stories, 1),
     b('verified', '✉️', 'Проверенный', 'Подтвердить почту при входе', u.email_verified ? 1 : 0, 1),
   ];
+}
+
+/* =====================================================================
+   Боты и мини-аппы (v6): боты — специальные пользователи (is_bot = 1),
+   поэтому чаты, сообщения и сокеты работают без изменений схемы.
+   ===================================================================== */
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS bots (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id        INTEGER NOT NULL REFERENCES users(id),
+  user_id         INTEGER NOT NULL UNIQUE REFERENCES users(id),
+  username        TEXT NOT NULL UNIQUE,
+  display_name    TEXT NOT NULL DEFAULT '',
+  description     TEXT NOT NULL DEFAULT '',
+  token           TEXT NOT NULL UNIQUE,
+  code            TEXT NOT NULL DEFAULT '',
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  deleted         INTEGER NOT NULL DEFAULT 0,
+  msg_count       INTEGER NOT NULL DEFAULT 0,
+  logs            TEXT NOT NULL DEFAULT '[]',
+  miniapp_enabled INTEGER NOT NULL DEFAULT 0,
+  miniapp_title   TEXT NOT NULL DEFAULT '',
+  miniapp_code    TEXT NOT NULL DEFAULT '',
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS bot_states (
+  bot_id INTEGER PRIMARY KEY REFERENCES bots(id),
+  data   TEXT NOT NULL DEFAULT '{}'
+);
+`);
+
+export function createBot({ ownerId, username, displayName, description, token, code }) {
+  // бот — это пользователь без пароля (войти им нельзя), помечен is_bot = 1
+  const { lastInsertRowid } = db.prepare(
+    "INSERT INTO users (username, display_name, password_hash, is_bot) VALUES (?, ?, '', 1)"
+  ).run(username, displayName);
+  const userId = Number(lastInsertRowid);
+  const info = db.prepare(`
+    INSERT INTO bots (owner_id, user_id, username, display_name, description, token, code)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(ownerId, userId, username, displayName, description, token, code);
+  return getBotById(Number(info.lastInsertRowid));
+}
+
+const BOT_SELECT = `
+  SELECT b.*, u.avatar AS user_avatar FROM bots b JOIN users u ON u.id = b.user_id
+  WHERE b.deleted = 0`;
+
+export function getBotById(id) {
+  return db.prepare(BOT_SELECT + ' AND b.id = ?').get(id) || null;
+}
+export function getBotByUserId(userId) {
+  return db.prepare(BOT_SELECT + ' AND b.user_id = ?').get(userId) || null;
+}
+export function getBotByToken(token) {
+  return db.prepare(BOT_SELECT + " AND b.token = ? AND b.enabled = 1").get(token) || null;
+}
+export function getBotByUsername(username) {
+  return db.prepare(BOT_SELECT + ' AND b.username = ?').get(String(username).toLowerCase()) || null;
+}
+export function listBotsByOwner(ownerId) {
+  return db.prepare(BOT_SELECT + ' AND b.owner_id = ? ORDER BY b.id DESC').all(ownerId);
+}
+export function listPublicBots() {
+  return db.prepare(BOT_SELECT + ' AND b.enabled = 1 ORDER BY b.msg_count DESC, b.id DESC').all();
+}
+export function botUsernameTaken(username) {
+  return !!db.prepare('SELECT 1 FROM users WHERE username = ?').get(username);
+}
+export function updateBot(id, fields = {}) {
+  const map = {
+    display_name: 'display_name', description: 'description', code: 'code',
+    enabled: 'enabled', logs: 'logs', token: 'token',
+    miniapp_enabled: 'miniapp_enabled', miniapp_title: 'miniapp_title', miniapp_code: 'miniapp_code',
+  };
+  for (const [key, col] of Object.entries(map)) {
+    if (fields[key] !== undefined) {
+      db.prepare('UPDATE bots SET ' + col + ' = ? WHERE id = ?').run(fields[key], id);
+    }
+  }
+  const bot = getBotById(id);
+  if (bot && fields.display_name !== undefined) {
+    db.prepare('UPDATE users SET display_name = ? WHERE id = ?').run(fields.display_name, bot.user_id);
+  }
+  return bot;
+}
+export function bumpBotMsgs(id) {
+  db.prepare('UPDATE bots SET msg_count = msg_count + 1 WHERE id = ?').run(id);
+}
+export function appendBotLogs(id, entries) {
+  const row = db.prepare('SELECT logs FROM bots WHERE id = ?').get(id);
+  let logs = [];
+  try { logs = JSON.parse(row?.logs || '[]'); } catch { logs = []; }
+  logs = [...logs, ...entries].slice(-40);
+  db.prepare('UPDATE bots SET logs = ? WHERE id = ?').run(JSON.stringify(logs), id);
+}
+export function deleteBot(id, ownerId) {
+  const info = db.prepare('UPDATE bots SET deleted = 1, enabled = 0 WHERE id = ? AND owner_id = ?').run(id, ownerId);
+  if (info.changes === 0) return false;
+  const raw = db.prepare('SELECT user_id FROM bots WHERE id = ?').get(id);
+  if (raw) db.prepare("UPDATE users SET display_name = 'Удалённый бот' WHERE id = ?").run(raw.user_id);
+  return true;
+}
+export function getBotState(botId) {
+  const row = db.prepare('SELECT data FROM bot_states WHERE bot_id = ?').get(botId);
+  if (!row) return {};
+  try { return JSON.parse(row.data) || {}; } catch { return {}; }
+}
+export function setBotState(botId, data) {
+  db.prepare(`
+    INSERT INTO bot_states (bot_id, data) VALUES (?, ?)
+    ON CONFLICT(bot_id) DO UPDATE SET data = excluded.data
+  `).run(botId, JSON.stringify(data ?? {}));
+}
+export function publicBot(b, { withToken = false } = {}) {
+  if (!b) return null;
+  let logs = [];
+  try { logs = JSON.parse(b.logs || '[]'); } catch { logs = []; }
+  return {
+    id: b.id,
+    user_id: b.user_id,
+    username: b.username,
+    display_name: b.display_name,
+    description: b.description,
+    enabled: !!b.enabled,
+    msg_count: b.msg_count,
+    has_miniapp: !!b.miniapp_enabled && !!(b.miniapp_code || '').trim(),
+    created_at: b.created_at,
+    ...(withToken ? {
+      token: b.token,
+      code: b.code,
+      miniapp: { enabled: !!b.miniapp_enabled, title: b.miniapp_title, code: b.miniapp_code },
+      logs,
+    } : {}),
+  };
 }

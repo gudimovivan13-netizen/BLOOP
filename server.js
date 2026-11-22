@@ -20,7 +20,15 @@ import {
   createUser, findUserByEmail, saveEmailCode, getEmailCode, bumpEmailAttempts, deleteEmailCode,
   reactPost, POST_EMOJIS, votePoll, reactMessage,
   createStory, listStories, getStory, deleteStory, viewStory, getUserBadges,
+  createBot, getBotById, getBotByUserId, getBotByToken, getBotByUsername,
+  listBotsByOwner, listPublicBots, botUsernameTaken, updateBot, deleteBot,
+  bumpBotMsgs, getBotState, setBotState, publicBot,
 } from './src/db.js';
+import {
+  runBotEvent, pushBotUpdate, waitUpdates, clearUpdates,
+  newBotToken, normalizeKeyboard, BOT_TEMPLATES, MINIAPP_TEMPLATE,
+  MAX_CODE_CHARS, MAX_MINIAPP_CHARS, BOT_DOC,
+} from './src/bot-engine.js';
 import { hashPassword, verifyPassword, signToken, verifyToken, hashEmailCode, verifyEmailCode } from './src/auth.js';
 import { deliverEmailCode } from './src/email.js';
 import { upload, checkUploadSize, mediaKind, publicUrl, MAX_VIDEO_BYTES } from './src/media.js';
@@ -227,6 +235,9 @@ api.post('/chats', async (req, res) => {
       memberIds: [req.user.id, peer.id],
     });
     emitChatNew(chatId, [peer.id]);
+    // первый заход в чат с ботом — событие start (как /start в Telegram)
+    const startBot = peer.is_bot ? getBotByUserId(peer.id) : null;
+    if (startBot) runBotSafe(startBot, chatId, req.user, { kind: 'start' });
     return res.json({ chat_id: chatId, existed: false });
   }
   if (type === 'group') {
@@ -277,6 +288,15 @@ api.post('/chats/:id/messages', (req, res) => {
   }
   const message = insertMessage(chatId, req.user.id, body, imagePath, mediaKind, replyTo);
   io.to(`chat:${chatId}`).emit('message', message);
+  // если это чат с ботом — передаём сообщение движку и в очередь обновлений
+  const msgBot = chatBot(chatId);
+  if (msgBot) {
+    pushBotUpdate(msgBot.id, {
+      type: 'message', chat_id: chatId, text: body, message_id: message.id,
+      from: { id: req.user.id, name: req.user.display_name, username: req.user.username },
+    });
+    runBotSafe(msgBot, chatId, req.user, { kind: 'message', text: body, message_id: message.id });
+  }
   res.json({ message });
 });
 
@@ -301,6 +321,16 @@ api.post('/chats/:id/read', (req, res) => {
   res.json({ ok: true });
 });
 
+const botapi = express.Router();
+botapi.use((req, res, next) => {
+  const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  const bot = token ? getBotByToken(token) : null;
+  if (!bot) return fail(res, 401, 'Неверный токен бота');
+  req.bot = bot;
+  next();
+});
+
+app.use('/api/botapi', botapi); // свой токен-доступ, до общего 404
 app.use('/api', api);
 app.use('/api', (req, res) => fail(res, 404, 'Неизвестный маршрут API'));
 
@@ -654,6 +684,220 @@ api.post('/assistant', async (req, res) => {
     console.error('assistant fallback:', err.message);
     res.json({ reply: assistantFallback(lastUser?.content), source: 'fallback' });
   }
+});
+
+
+/* =====================================================================
+   Боты и мини-аппы (v6): платформа вроде Telegram Bot API, но целиком
+   своя. Бот — пользователь is_bot=1 с кодом, исполняемым в песочнице.
+   ===================================================================== */
+
+function chatBot(chatId) {
+  return db.prepare(`
+    SELECT b.* FROM bots b
+    JOIN chat_members cm ON cm.chat_id = ? AND cm.user_id = b.user_id
+    WHERE b.deleted = 0
+  `).get(chatId) || null;
+}
+
+function botTyping(chatId, botUserId, on) {
+  io.to(`chat:${chatId}`).emit('typing', { chat_id: chatId, user_id: botUserId, typing: !!on });
+}
+
+// исполнение события с индикатором «печатает…» и логированием ошибок
+function runBotSafe(bot, chatId, user, event) {
+  botTyping(chatId, bot.user_id, true);
+  runBotEvent({ bot, chatId, user, event, emitMessage: (m) => io.to(`chat:${chatId}`).emit('message', m) })
+    .then((r) => { if (r?.error) console.error(`бот ${bot.username}:`, r.error); })
+    .catch((e) => console.error(`бот ${bot.username} упал:`, e))
+    .finally(() => botTyping(chatId, bot.user_id, false));
+}
+
+const BOT_USERNAME_RE = /^bot_[a-z0-9_]{3,24}$/;
+
+
+/* ---------- управление своими ботами (BotFather внутри BLOOP) ---------- */
+
+api.get('/bots/mine', (req, res) => {
+  res.json({ bots: listBotsByOwner(req.user.id).map(b => publicBot(b, { withToken: true })) });
+});
+
+api.post('/bots', (req, res) => {
+  let username = String(req.body?.username || '').trim().toLowerCase();
+  if (username && !username.startsWith('bot_')) username = 'bot_' + username;
+  if (!BOT_USERNAME_RE.test(username)) {
+    return fail(res, 400, 'Юзернейм бота: bot_имя, 3–24 символа — латиница, цифры, _');
+  }
+  if (botUsernameTaken(username)) return fail(res, 409, 'Такой юзернейм уже занят');
+  const displayName = String(req.body?.display_name || '').trim().slice(0, 40)
+    || username.replace(/^bot_/, 'Бот ');
+  const description = String(req.body?.description || '').trim().slice(0, 300);
+  // новый бот сразу работает: шаблон «Эхо-бот» предустановлен
+  const bot = createBot({
+    ownerId: req.user.id,
+    username,
+    displayName,
+    description,
+    token: newBotToken(),
+    code: BOT_TEMPLATES[0].code,
+  });
+  res.json({ bot: publicBot(bot, { withToken: true }) });
+});
+
+api.put('/bots/:id', (req, res) => {
+  const bot = getBotById(Number(req.params.id));
+  if (!bot) return fail(res, 404, 'Бот не найден');
+  if (bot.owner_id !== req.user.id) return fail(res, 403, 'Это не ваш бот');
+  const b = req.body || {};
+  const fields = {};
+  if (b.display_name !== undefined) {
+    fields.display_name = String(b.display_name).trim().slice(0, 40) || bot.display_name;
+  }
+  if (b.description !== undefined) fields.description = String(b.description).trim().slice(0, 300);
+  if (b.code !== undefined) {
+    const code = String(b.code);
+    if (code.length > MAX_CODE_CHARS) return fail(res, 400, `Код больше ${MAX_CODE_CHARS} символов`);
+    fields.code = code;
+  }
+  if (b.enabled !== undefined) fields.enabled = b.enabled ? 1 : 0;
+  if (b.miniapp_enabled !== undefined) fields.miniapp_enabled = b.miniapp_enabled ? 1 : 0;
+  if (b.miniapp_title !== undefined) fields.miniapp_title = String(b.miniapp_title).trim().slice(0, 60);
+  if (b.miniapp_code !== undefined) {
+    const mc = String(b.miniapp_code);
+    if (mc.length > MAX_MINIAPP_CHARS) return fail(res, 400, `Код мини-аппа больше ${MAX_MINIAPP_CHARS} символов`);
+    fields.miniapp_code = mc;
+  }
+  const updated = updateBot(bot.id, fields);
+  res.json({ bot: publicBot(updated, { withToken: true }) });
+});
+
+api.post('/bots/:id/retoken', (req, res) => {
+  const bot = getBotById(Number(req.params.id));
+  if (!bot) return fail(res, 404, 'Бот не найден');
+  if (bot.owner_id !== req.user.id) return fail(res, 403, 'Это не ваш бот');
+  const token = newBotToken();
+  updateBot(bot.id, { token });
+  res.json({ token });
+});
+
+api.delete('/bots/:id', (req, res) => {
+  const bot = getBotById(Number(req.params.id));
+  if (!bot) return fail(res, 404, 'Бот не найден');
+  if (bot.owner_id !== req.user.id) return fail(res, 403, 'Это не ваш бот');
+  deleteBot(bot.id, req.user.id);
+  clearUpdates(bot.id);
+  res.json({ ok: true });
+});
+
+api.get('/bots/public', (req, res) => {
+  res.json({ bots: listPublicBots().map(b => publicBot(b)) });
+});
+
+api.get('/bots/doc', (req, res) => {
+  res.json({
+    doc: BOT_DOC,
+    templates: BOT_TEMPLATES.map(t => ({ id: t.id, name: t.name })),
+    miniapp_template: MINIAPP_TEMPLATE,
+  });
+});
+
+/* ---------- колбэк инлайн-клавиатуры ---------- */
+
+api.post('/chats/:id/callback', (req, res) => {
+  const chatId = Number(req.params.id);
+  if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
+  const bot = chatBot(chatId);
+  if (!bot) return fail(res, 404, 'В этом чате нет бота');
+  const data = String(req.body?.data || '').slice(0, 64);
+  const messageId = Number(req.body?.message_id) || null;
+  pushBotUpdate(bot.id, {
+    type: 'callback', chat_id: chatId, data, message_id: messageId,
+    from: { id: req.user.id, name: req.user.display_name, username: req.user.username },
+  });
+  runBotSafe(bot, chatId, req.user, { kind: 'callback', data, message_id: messageId });
+  res.json({ ok: true });
+});
+
+/* ---------- события из мини-аппа ---------- */
+
+function openBotChatFor(userId, bot) {
+  const existing = findDirectChat(userId, bot.user_id);
+  if (existing) return { chatId: existing.id, existed: true };
+  const chatId = createChat({ type: 'direct', createdBy: userId, memberIds: [userId, bot.user_id] });
+  emitChatNew(chatId, [bot.user_id]);
+  runBotSafe(bot, chatId, getUserById(userId), { kind: 'start' });
+  return { chatId, existed: false };
+}
+
+api.get('/miniapp/:username/state', (req, res) => {
+  const bot = getBotByUsername(req.params.username);
+  if (!bot || !bot.enabled || !bot.miniapp_enabled) return fail(res, 404, 'Мини-апп не найден');
+  res.json({ state: getBotState(bot.id) });
+});
+
+api.post('/miniapp/:username/data', (req, res) => {
+  const bot = getBotByUsername(req.params.username);
+  if (!bot || !bot.enabled || !bot.miniapp_enabled) return fail(res, 404, 'Мини-апп не найден');
+  const { chatId } = openBotChatFor(req.user.id, bot);
+  const data = req.body?.data;
+  pushBotUpdate(bot.id, {
+    type: 'miniapp', chat_id: chatId, data: data ?? null,
+    from: { id: req.user.id, name: req.user.display_name, username: req.user.username },
+  });
+  // исполнение синхронно ждём: мини-апп хочет свежее состояние в ответе
+  botTyping(chatId, bot.user_id, true);
+  runBotEvent({ bot, chatId, user: req.user, event: { kind: 'miniapp', data }, emitMessage: (m) => io.to(`chat:${chatId}`).emit('message', m) })
+    .then((r) => { if (r?.error) console.error(`бот ${bot.username}:`, r.error); })
+    .catch((e) => console.error(`бот ${bot.username} упал:`, e))
+    .finally(() => botTyping(chatId, bot.user_id, false));
+  res.json({ ok: true, state: getBotState(bot.id) });
+});
+
+/* ---------- Bot HTTP API: доступ по токену бота (getUpdates long polling) ---------- */
+
+botapi.get('/getMe', (req, res) => {
+  res.json({ bot: publicBot(req.bot) });
+});
+
+botapi.post('/sendMessage', (req, res) => {
+  const chatId = Number(req.body?.chat_id);
+  const text = String(req.body?.text || '').trim().slice(0, 4000);
+  if (!chatId) return fail(res, 400, 'Нужен chat_id');
+  if (!text) return fail(res, 400, 'Пустой текст');
+  const ok = db.prepare(`
+    SELECT 1 FROM chats c JOIN chat_members m ON m.chat_id = c.id
+    WHERE c.id = ? AND c.type = 'direct' AND m.user_id = ?
+  `).get(chatId, req.bot.user_id);
+  if (!ok) return fail(res, 403, 'Бот не участник этого чата');
+  let kb = null;
+  if (req.body?.keyboard) {
+    try { kb = normalizeKeyboard(req.body.keyboard); } catch { kb = null; }
+  }
+  const message = insertMessage(chatId, req.bot.user_id, text, null, 'image', null, kb);
+  bumpBotMsgs(req.bot.id);
+  io.to(`chat:${chatId}`).emit('message', message);
+  res.json({ message });
+});
+
+botapi.get('/getUpdates', async (req, res) => {
+  const timeout = Math.max(0, Math.min(Number(req.query.timeout) || 0, 30000));
+  const updates = await waitUpdates(req.bot.id, timeout);
+  res.json({ updates });
+});
+
+/* ---------- раздача мини-аппов ---------- */
+
+app.get('/miniapp/:username', (req, res) => {
+  const bot = getBotByUsername(req.params.username);
+  if (!bot || !bot.enabled || !bot.miniapp_enabled || !(bot.miniapp_code || '').trim()) {
+    return res.status(404).send('<!doctype html><meta charset="utf-8"><p>Мини-апп не найден</p>');
+  }
+  const code = bot.miniapp_code;
+  const hasSdk = code.includes('/miniapp-sdk.js');
+  const inject = `<script>window.__BMA_BOOT__=${JSON.stringify({ username: bot.username })};</script>` +
+    (hasSdk ? '' : '\n<script src="/miniapp-sdk.js"></script>');
+  const html = code.includes('</body>') ? code.replace('</body>', inject + '\n</body>') : code + inject;
+  res.type('html').send(html);
 });
 
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars

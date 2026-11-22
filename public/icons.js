@@ -138,6 +138,8 @@
     envelope:mono(P.envelope.replace(/#fff/g, 'currentColor')),
     broadcast:mono(P.broadcast.replace(/#fff/g, 'currentColor')),
     seal:    mono(P.seal),
+    code:    tile('azure', '<path d="M9 8.5L5.5 12 9 15.5M15 8.5L18.5 12 15 15.5" stroke="#fff" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'),
+    app:     tile('cyan', '<rect x="5" y="5" width="14" height="14" rx="3" stroke="#fff" stroke-width="1.7" fill="none"/><path d="M5 9.5h14" stroke="#fff" stroke-width="1.7"/><circle cx="7.8" cy="7.3" r="0.9" fill="#fff"/><circle cx="10.4" cy="7.3" r="0.9" fill="#fff"/>'),
   };
 
   function iconEl(name, cls) {

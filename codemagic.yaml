@@ -1,0 +1,47 @@
+# Codemagic: облачная сборка BLOOP для iOS на macOS-раннере.
+# 1) Зарегистрируйтесь на codemagic.io и подключите репозиторий.
+# 2) В настройках приложения добавьте Apple Developer Team / сертификаты
+#    (для публикации в App Store) или выберите тип сборки без подписи.
+# 3) Workflows -> bloop-ios -> Start build. Готовый .ipa — в артефактах.
+workflows:
+  bloop-ios:
+    name: BLOOP iOS
+    max_build_duration: 30
+    instance_type: mac_mini_m2
+    environment:
+      node: 20
+      xcode: latest
+      vars:
+        BUNDLE_ID: net.gudimov.bloop
+    scripts:
+      - name: Сборка www (локальный режим)
+        script: |
+          cd app
+          npm ci
+          npm run build:www
+          npx cap sync ios
+      - name: Сборка Xcode-архива
+        script: |
+          cd app/ios/App
+          xcodebuild -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -archivePath $CM_BUILD_DIR/BLOOP.xcarchive \
+            archive -allowProvisioningUpdates
+      - name: Экспорт .ipa
+        script: |
+          cd $CM_BUILD_DIR
+          # Для App Store нужен подписанный экспорт (Team в codemagic);
+          # без него можно получить unsigned ipa для симулятора/Ad Hoc.
+          xcodebuild -exportArchive \
+            -archivePath BLOOP.xcarchive \
+            -exportOptionsPlist app/ios/exportOptions.plist \
+            -exportPath $CM_BUILD_DIR \
+            -allowProvisioningUpdates || echo "Подпись не настроена — см. README (раздел iOS)"
+    artifacts:
+      - "*.ipa"
+      - BLOOP.xcarchive
+    publishing:
+      email:
+        recipients:
+          - your-email@example.com

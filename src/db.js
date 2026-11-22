@@ -49,15 +49,28 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id);
 `);
 
-// Миграции для баз, созданных до появления соцсети (v2).
+// Миграции для баз, созданных до появления соцсети (v2) и телефона/голоса (v4).
 const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
 if (!userCols.includes('avatar')) db.exec('ALTER TABLE users ADD COLUMN avatar TEXT');
 if (!userCols.includes('bio')) db.exec("ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''");
+if (!userCols.includes('phone')) db.exec('ALTER TABLE users ADD COLUMN phone TEXT');
 
-export function createUser({ username, displayName, passwordHash }) {
+db.exec(`
+CREATE TABLE IF NOT EXISTS phone_codes (
+  phone     TEXT PRIMARY KEY,
+  code_hash TEXT NOT NULL,
+  expires   INTEGER NOT NULL,
+  attempts  INTEGER NOT NULL DEFAULT 0
+);
+`);
+
+const msgCols = db.prepare('PRAGMA table_info(messages)').all().map(c => c.name);
+if (!msgCols.includes('media_kind')) db.exec("ALTER TABLE messages ADD COLUMN media_kind TEXT DEFAULT 'image'");
+
+export function createUser({ username, displayName, passwordHash, phone = null }) {
   const { lastInsertRowid } = db.prepare(
-    'INSERT INTO users (username, display_name, password_hash) VALUES (?, ?, ?)'
-  ).run(username, displayName, passwordHash);
+    'INSERT INTO users (username, display_name, password_hash, phone) VALUES (?, ?, ?, ?)'
+  ).run(username, displayName, passwordHash, phone);
   return getUserById(Number(lastInsertRowid));
 }
 
@@ -67,6 +80,29 @@ export function getUserById(id) {
 
 export function getUserWithPassword(username) {
   return db.prepare('SELECT * FROM users WHERE username = ?').get(username) || null;
+}
+
+export function findUserByPhone(phone) {
+  return db.prepare('SELECT * FROM users WHERE phone = ?').get(phone) || null;
+}
+
+export function savePhoneCode(phone, codeHash, expires) {
+  db.prepare(`
+    INSERT INTO phone_codes (phone, code_hash, expires, attempts) VALUES (?, ?, ?, 0)
+    ON CONFLICT(phone) DO UPDATE SET code_hash = excluded.code_hash, expires = excluded.expires, attempts = 0
+  `).run(phone, codeHash, expires);
+}
+
+export function getPhoneCode(phone) {
+  return db.prepare('SELECT * FROM phone_codes WHERE phone = ?').get(phone) || null;
+}
+
+export function bumpPhoneAttempts(phone) {
+  db.prepare('UPDATE phone_codes SET attempts = attempts + 1 WHERE phone = ?').run(phone);
+}
+
+export function deletePhoneCode(phone) {
+  db.prepare('DELETE FROM phone_codes WHERE phone = ?').run(phone);
 }
 
 export function listUsers() {
@@ -102,27 +138,25 @@ export function chatMemberIds(chatId) {
   return db.prepare('SELECT user_id FROM chat_members WHERE chat_id = ?').all(chatId).map(r => r.user_id);
 }
 
-export function insertMessage(chatId, senderId, text, image) {
+export function insertMessage(chatId, senderId, text, image, mediaKind = 'image') {
   const { lastInsertRowid } = db.prepare(
-    'INSERT INTO messages (chat_id, sender_id, text, image) VALUES (?, ?, ?, ?)'
-  ).run(chatId, senderId, text, image);
+    'INSERT INTO messages (chat_id, sender_id, text, image, media_kind) VALUES (?, ?, ?, ?, ?)'
+  ).run(chatId, senderId, text, image, mediaKind);
   return getMessageById(Number(lastInsertRowid));
 }
 
+const MSG_SELECT = `
+  SELECT m.id, m.chat_id, m.sender_id, m.text, m.image, m.media_kind, m.created_at,
+         u.username, u.display_name
+  FROM messages m JOIN users u ON u.id = m.sender_id`;
+
 export function getMessageById(id) {
-  return db.prepare(`
-    SELECT m.id, m.chat_id, m.sender_id, m.text, m.image, m.created_at,
-           u.username, u.display_name
-    FROM messages m JOIN users u ON u.id = m.sender_id
-    WHERE m.id = ?
-  `).get(id) || null;
+  return db.prepare(`${MSG_SELECT} WHERE m.id = ?`).get(id) || null;
 }
 
 export function listMessages(chatId, { before = 0, limit = 50 } = {}) {
   const rows = db.prepare(`
-    SELECT m.id, m.chat_id, m.sender_id, m.text, m.image, m.created_at,
-           u.username, u.display_name
-    FROM messages m JOIN users u ON u.id = m.sender_id
+    ${MSG_SELECT}
     WHERE m.chat_id = ? ${before ? 'AND m.id < ?' : ''}
     ORDER BY m.id DESC LIMIT ?
   `).all(...(before ? [chatId, before, limit] : [chatId, limit]));
@@ -137,7 +171,7 @@ export function listChatsForUser(userId) {
   `).all(userId);
 
   const lastMsg = db.prepare(`
-    SELECT m.id, m.sender_id, m.text, m.image, m.created_at, u.display_name
+    SELECT m.id, m.sender_id, m.text, m.image, m.media_kind, m.created_at, u.display_name
     FROM messages m JOIN users u ON u.id = m.sender_id
     WHERE m.chat_id = ? ORDER BY m.id DESC LIMIT 1
   `);

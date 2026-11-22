@@ -70,7 +70,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function main() {
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
   const server = spawn(process.execPath, ['server.js'], {
-    env: { ...process.env, PORT: String(PORT), BLOOP_DATA_DIR: DATA_DIR },
+    env: { ...process.env, PORT: String(PORT), BLOOP_DATA_DIR: DATA_DIR, BLOOP_SMS_DEBUG: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stdout.on('data', d => process.stdout.write(`[server] ${d}`));
@@ -324,8 +324,54 @@ async function main() {
     const aiBad = await api('/api/assistant', { method: 'POST', token: tokA, body: { messages: [] } });
     check('ассистент без сообщений отклоняется', aiBad.status === 400);
 
+    /* ---------- v4: телефонный вход и голосовые ---------- */
+
+    const badPhone = await api('/api/auth/phone/start', { method: 'POST', body: { phone: '123' } });
+    check('короткий номер отклоняется', badPhone.status === 400);
+
+    const pStart = await api('/api/auth/phone/start', { method: 'POST', body: { phone: '+79991234567' } });
+    check('код генерируется (debug-режим)', pStart.status === 200 && /^\d{6}$/.test(pStart.data.debug_code || ''));
+
+    const pBad = await api('/api/auth/phone/verify', { method: 'POST', body: { phone: '+79991234567', code: '000000' } });
+    check('неверный код отклоняется', pBad.status === 401);
+
+    const pVerify = await api('/api/auth/phone/verify', {
+      method: 'POST',
+      body: { phone: '+79991234567', code: pStart.data.debug_code, display_name: 'Телефон Гость' },
+    });
+    check('верификация создаёт аккаунт', pVerify.status === 200 && pVerify.data.created === true && !!pVerify.data.token);
+    const pMe = await api('/api/me', { token: pVerify.data.token });
+    check('телефонный токен работает', pMe.status === 200 && pMe.data.user.display_name === 'Телефон Гость');
+    const pSpam = await api('/api/auth/phone/start', { method: 'POST', body: { phone: '+79991234567' } });
+    check('антиспам: второй код за 30 секунд не уходит', pSpam.status === 429);
+    const pOnce = await api('/api/auth/phone/verify', {
+      method: 'POST',
+      body: { phone: '+79991234567', code: pStart.data.debug_code },
+    });
+    check('код одноразовый: после входа не принимается', pOnce.status === 400);
+
+    // голосовое: минимальный WAV (44 байта заголовка + данные)
+    const wav = Buffer.concat([
+      Buffer.from('RIFF24wkWAVEfmt 16PRIffd\x01\x00\x01\x00D\xac\x00\x00\x88X\x01\x00\x02\x00\x10\x00data'),
+      Buffer.from([0x00, 0x00, 0x00, 0x00]),
+    ]);
+    const voiceMsg = await api(`/api/chats/${chat1.data.chat_id}/messages`, {
+      method: 'POST', token: tokA,
+      body: { voice: `data:audio/wav;base64,${wav.toString('base64')}` },
+    });
+    check('голосовое сохраняется с media_kind=voice', voiceMsg.status === 200 && voiceMsg.data.message?.media_kind === 'voice');
+    const voiceList = await api(`/api/chats/${chat1.data.chat_id}/messages`, { token: tokB });
+    check('голосовое приходит в списке сообщений', voiceList.data.messages?.some(m => m.media_kind === 'voice' && m.image?.endsWith('.wav')));
+
+    const both = await api(`/api/chats/${chat1.data.chat_id}/messages`, {
+      method: 'POST', token: tokA,
+      body: { voice: `data:audio/wav;base64,${wav.toString('base64')}`, image: 'data:image/png;base64,iVBORw0KGgo=' },
+    });
+    check('картинка+голосовое одновременно отклоняются', both.status === 400);
+
     sockB2.disconnect();
     sockA2.disconnect();
+
 
   } finally {
     server.kill();

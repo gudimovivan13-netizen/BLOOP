@@ -1172,3 +1172,175 @@ input, textarea { font: inherit; }
   .toast { max-width: none; }
   .ai-card { height: 92dvh; max-height: none; }
 }
+
+/* =====================================================================
+   v4: телефонный вход, голосовые, камера рилсов, Вирусометр, Floop
+   ===================================================================== */
+
+.link-btn {
+  background: none; border: 0; padding: 0;
+  color: var(--accent); text-decoration: underline; cursor: pointer;
+}
+
+/* --- вход по телефону --- */
+.phone-hint {
+  font-size: 12.5px; color: var(--muted); line-height: 1.45; margin-top: 6px;
+}
+#phone-form input { margin-bottom: 10px; }
+#phone-step-2 { animation: fadeIn .25s ease; }
+@keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
+
+/* --- бейджи-аватарки разделов --- */
+.section-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 50%;
+  color: #fff; flex: 0 0 auto;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .25);
+}
+.section-badge svg { width: 18px; height: 18px; }
+.b-feed  { background: linear-gradient(135deg, #7aa2ff, #4c6fff); }
+.b-clips { background: linear-gradient(135deg, #ff5c8a, #ff8a5c); }
+.b-video { background: linear-gradient(135deg, #8f6cff, #5c8aff); }
+.b-chat  { background: linear-gradient(135deg, #3ddc84, #2bb673); width: 26px; height: 26px; }
+.section-badge svg { color: #fff; }
+
+.page-strip {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 2px 12px;
+}
+.page-strip h2 { margin: 0; font-size: 20px; }
+.strip-note { color: var(--muted); font-size: 13px; margin-left: auto; }
+
+.clips-strip {
+  position: absolute; top: 14px; left: 14px; z-index: 5;
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(10, 14, 22, .55); backdrop-filter: blur(8px);
+  padding: 6px 12px 6px 8px; border-radius: 20px; color: #fff; font-weight: 600;
+  font-size: 14px;
+}
+#page-clips { position: relative; }
+
+.side-title { display: inline-flex; align-items: center; gap: 8px; }
+
+/* --- Вирусометр --- */
+.viral-meter {
+  margin: 8px 0 4px; padding: 10px 12px;
+  background: color-mix(in srgb, var(--accent-2) 10%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--accent-2) 45%, transparent);
+  border-radius: 12px;
+}
+.vm-head { display: flex; align-items: center; justify-content: space-between; }
+.vm-title { font-weight: 700; font-size: 13.5px; }
+.vm-score { font-weight: 800; font-size: 15px; color: var(--accent-2); }
+.vm-score[data-level="hot"]  { color: #ff8a5c; }
+.vm-score[data-level="cold"] { color: var(--muted); }
+.vm-bar {
+  height: 6px; border-radius: 3px; margin: 8px 0;
+  background: color-mix(in srgb, var(--text) 12%, transparent); overflow: hidden;
+}
+.vm-fill {
+  height: 100%; width: 0; border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width .35s ease;
+}
+.vm-fill[data-level="hot"] { background: linear-gradient(90deg, #ff5c8a, #ff8a5c); }
+.vm-tip { font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+
+/* --- пульс публикации --- */
+.pulse-badge {
+  margin-left: auto; align-self: center;
+  font-size: 12px; font-weight: 700; white-space: nowrap;
+  padding: 3px 10px; border-radius: 12px;
+}
+.pulse-badge.hot  { background: #ff5c8a22; color: #ff5c8a; }
+.pulse-badge.warm { background: #ff8a5c22; color: #ff8a5c; }
+.pulse-badge.fresh { background: #3ddc8422; color: #3ddc84; }
+
+/* --- голосовые сообщения --- */
+.voice-btn.recording { color: #ff5c8a; animation: pulseDot 1s infinite; }
+@keyframes pulseDot { 50% { opacity: .45; } }
+.voice-rec {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; background: var(--panel-2);
+  border-top: 1px solid var(--border);
+}
+.composer { position: relative; }
+.rec-dot {
+  width: 10px; height: 10px; border-radius: 50%; background: #ff5c8a;
+  animation: pulseDot 1s infinite;
+}
+.rec-hint { color: var(--muted); font-size: 13px; flex: 1; }
+#voice-time { font-variant-numeric: tabular-nums; font-weight: 700; }
+
+.voice-bubble {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 18px; padding: 8px 12px; min-width: 200px; max-width: 280px;
+}
+.msg.mine .voice-bubble { background: var(--mine); border-color: transparent; }
+.vb-play {
+  width: 34px; height: 34px; border-radius: 50%; border: 0;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff; font-size: 13px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+}
+.vb-wave {
+  display: flex; align-items: center; gap: 2px; flex: 1; height: 30px;
+  overflow: hidden;
+  --vb-progress: 0%;
+}
+.vb-wave span {
+  width: 3px; border-radius: 2px; background: color-mix(in srgb, var(--text) 30%, transparent);
+  transition: background .15s;
+}
+.vb-wave span:nth-child(-n+8) { background: var(--accent); }
+.vb-time { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* --- съёмка рилса --- */
+.upload-choice { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.record-btn {
+  padding: 12px; border-radius: 12px; border: 1.5px dashed var(--accent-2);
+  background: color-mix(in srgb, var(--accent-2) 12%, transparent);
+  color: var(--text); font-weight: 700;
+}
+.record-btn:hover { background: color-mix(in srgb, var(--accent-2) 20%, transparent); }
+
+.camera-modal { z-index: 90; }
+.camera-card {
+  width: min(480px, 96vw); background: #0a0f18; border-radius: 20px;
+  overflow: hidden; color: #e8ecf5;
+  border: 1px solid #25314a;
+}
+.camera-head {
+  display: flex; align-items: center; gap: 10px; padding: 12px 14px;
+  background: #101726;
+}
+.camera-title { font-weight: 800; flex: 1; }
+.cam-timer { font-variant-numeric: tabular-nums; color: #ff8a5c; font-weight: 700; }
+.cam-stage { position: relative; background: #000; aspect-ratio: 9 / 13; }
+.cam-stage video {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; background: #000;
+}
+.cam-hint {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #8d9ab5; font-size: 14px; padding: 20px; text-align: center;
+}
+.cam-actions {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 14px; background: #101726;
+}
+.rec-btn {
+  width: 64px; height: 64px; border-radius: 50%;
+  border: 3px solid #ff5c8a; background: transparent;
+  display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+}
+.rec-circle {
+  width: 42px; height: 42px; border-radius: 50%; background: #ff5c8a;
+  transition: border-radius .2s, transform .2s;
+}
+.rec-btn.recording .rec-circle { border-radius: 6px; transform: scale(.8); background: #ff5c8a; }
+
+/* --- Floop --- */
+.floop-badge { display: inline-flex; vertical-align: middle; margin-right: 8px; }

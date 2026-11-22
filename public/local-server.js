@@ -16,6 +16,7 @@
     seq: { user: 0, chat: 0, msg: 0, post: 0, comment: 0, notif: 0 },
     users: [], chats: [], members: [], messages: [],
     posts: [], likes: [], comments: [], notifs: [], tags: [],
+    phoneCodes: [],
   });
 
   let db;
@@ -74,6 +75,7 @@
   const EXT = {
     'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp',
     'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov',
+    'audio/webm': 'weba', 'audio/mp4': 'm4a', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/wav': 'wav',
   };
 
   function uuid() {
@@ -82,14 +84,14 @@
       : Math.random().toString(16).slice(2) + Date.now().toString(16);
   }
 
-  /* dataURL (картинки из чата) -> File для IndexedDB */
+  /* dataURL (картинки и голосовые из чата) -> File для IndexedDB */
   async function dataUrlToFile(dataUrl) {
     const m = /^data:([^;]+);base64,(.+)$/.exec(String(dataUrl));
-    if (!m || !/^image\//.test(m[1])) return null;
+    if (!m || !/^(image|audio)\//.test(m[1])) return null;
     const bin = atob(m[2]);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new File([bytes], 'image', { type: m[1] });
+    return new File([bytes], m[1].startsWith('audio/') ? 'voice' : 'image', { type: m[1] });
   }
 
   async function storeFile(file) {
@@ -101,7 +103,7 @@
     mediaUrls.set(path, URL.createObjectURL(file));
     return {
       url: path,
-      kind: file.type.startsWith('video/') ? 'video' : 'image',
+      kind: file.type.startsWith('video/') ? 'video' : (file.type.startsWith('audio/') ? 'voice' : 'image'),
       mime: file.type || 'application/octet-stream',
       size: file.size,
       name: file.name || 'file',
@@ -186,7 +188,7 @@
     const u = db.users.find(x => x.id === m.sender_id);
     return {
       id: m.id, chat_id: m.chat_id, sender_id: m.sender_id, text: m.text,
-      image: m.image, created_at: m.created_at,
+      image: m.image, media_kind: m.media_kind || 'image', created_at: m.created_at,
       username: u?.username || '', display_name: u?.display_name || '',
     };
   }
@@ -240,6 +242,7 @@
       const unread = msgs.filter(x => x.id > lastRead && x.sender_id !== uid).length;
       const lastOut = last ? {
         id: last.id, sender_id: last.sender_id, text: last.text, image: last.image,
+        media_kind: last.media_kind || 'image',
         created_at: last.created_at,
         display_name: db.users.find(u => u.id === last.sender_id)?.display_name || '',
       } : null;
@@ -298,6 +301,70 @@
       fail(401, 'Неверный логин или пароль');
     }
     return { token: `local.${user.id}`, user: publicUser(user) };
+  });
+
+  /* ---------- вход по номеру телефона (локальная доставка кода) ---------- */
+
+  const normalizePhone = (raw) => {
+    const s = String(raw || '').replace(/[\s()\u2013\u2014-]/g, '').trim();
+    if (!/^\+?\d{7,15}$/.test(s)) return null;
+    return `+${s.replace(/^\+/, '')}`;
+  };
+  const phoneLastSend = new Map();
+
+  route('POST', /^\/api\/auth\/phone\/start$/, ({ body }) => {
+    const phone = normalizePhone(body?.phone);
+    if (!phone) fail(400, 'Введите номер в формате +79991234567 (7–15 цифр)');
+    const last = phoneLastSend.get(phone) || 0;
+    if (Date.now() - last < 30 * 1000) fail(429, 'Код уже отправлен — подождите 30 секунд');
+    phoneLastSend.set(phone, Date.now());
+    const code = String(Math.floor(Math.random() * 1_000_000)).padStart(6, '0');
+    const idx = db.phoneCodes.findIndex(c => c.phone === phone);
+    const rec = { phone, code, expires: Date.now() + 5 * 60 * 1000, attempts: 0 };
+    if (idx >= 0) db.phoneCodes[idx] = rec; else db.phoneCodes.push(rec);
+    save();
+    // Локальная доставка без внешних API: код возвращается клиенту и
+    // показывается как «SMS от BLOOP» (в APK шлюза физически нет).
+    return { ok: true, ttl_sec: 300, delivery: 'local-sim', local_code: code };
+  });
+
+  route('POST', /^\/api\/auth\/phone\/verify$/, ({ body }) => {
+    const phone = normalizePhone(body?.phone);
+    const code = String(body?.code || '').trim();
+    if (!phone) fail(400, 'Неверный номер телефона');
+    const rec = db.phoneCodes.find(c => c.phone === phone);
+    if (!rec) fail(400, 'Сначала запросите код');
+    if (Date.now() > rec.expires) {
+      db.phoneCodes = db.phoneCodes.filter(c => c.phone !== phone);
+      save();
+      fail(400, 'Код истёк — запросите новый');
+    }
+    if (rec.attempts >= 5) {
+      db.phoneCodes = db.phoneCodes.filter(c => c.phone !== phone);
+      save();
+      fail(429, 'Слишком много попыток — запросите новый код');
+    }
+    if (!code || code !== rec.code) {
+      rec.attempts += 1;
+      save();
+      fail(401, `Неверный код (осталось ${5 - rec.attempts} попыток)`);
+    }
+    db.phoneCodes = db.phoneCodes.filter(c => c.phone !== phone);
+    let user = db.users.find(u => u.phone === phone);
+    let created = false;
+    if (!user) {
+      let username = `user${phone.replace(/\D/g, '').slice(-9)}`;
+      if (db.users.some(u => u.username === username)) username += Math.floor(Math.random() * 90 + 10);
+      const displayName = String(body?.display_name || '').trim().slice(0, 40) || `Гость ${phone.slice(-4)}`;
+      user = {
+        id: next('user'), username, display_name: displayName,
+        password_hash: '', avatar: null, bio: '', phone, created_at: now(),
+      };
+      db.users.push(user);
+      created = true;
+    }
+    save();
+    return { token: `local.${user.id}`, user: publicUser(user), created };
   });
 
   route('GET', /^\/api\/me$/, ({ me }) => ({ user: publicUser(requireUser(me)) }));
@@ -360,17 +427,20 @@
     if (!isMember(chatId, me.id)) fail(403, 'Нет доступа к чату');
     let imageFile = file;
     if (!imageFile && body?.image) imageFile = await dataUrlToFile(body.image); // чат шлёт dataURL
+    if (!imageFile && body?.voice) imageFile = await dataUrlToFile(body.voice); // голосовое
     let imagePath = null;
+    let mediaKind = 'image';
     if (imageFile) {
       const up = await storeFile(imageFile);
-      if (up.kind !== 'image') fail(400, 'Поддерживаются только изображения');
+      if (up.kind !== 'image' && up.kind !== 'voice') fail(400, 'Поддерживаются изображения и голосовые');
       imagePath = up.url;
+      mediaKind = up.kind;
     }
     const text = String(body?.text || '').trim().slice(0, 4000);
     if (!text && !imagePath) fail(400, 'Пустое сообщение');
     const message = {
       id: next('msg'), chat_id: chatId, sender_id: me.id,
-      text, image: imagePath, created_at: now(),
+      text, image: imagePath, media_kind: mediaKind, created_at: now(),
     };
     db.messages.push(message);
     save();
@@ -576,14 +646,14 @@
     return { trends: [...counts.entries()].map(([tag, count]) => ({ tag, count })).sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag)).slice(0, limit) };
   });
 
-  /* Нейро в офлайне: честные заготовки без нейросети */
+  /* Floop в офлайне: честные заготовки без нейросети */
   function assistantFallback(question) {
     const q = String(question || '').toLowerCase();
     if (/привет|здравств|хай|hello/.test(q)) {
-      return 'Привет! 👋 Я Нейро — помощник BLOOP. Сейчас я в офлайн-режиме (без нейросети), но идеями постов и хэштегами всё равно помогу. Спрашивай!';
+      return 'Привет! 👋 Я Floop — помощник BLOOP. Сейчас я в офлайн-режиме (без нейросети), но идеями постов, хэштегами и советами для Вирусометра помогу. Спрашивай!';
     }
     if (/что (ты )?умеешь|помощь|help|умеешь/.test(q)) {
-      return 'В офлайн-режиме я умею: подсказывать идеи постов 📝, подписи к фото и хэштеги. Подключённая нейросеть появится в серверной версии.';
+      return 'В офлайн-режиме я умею: подсказывать идеи постов 📝, подписи к фото и хэштеги, объяснять Вирусометр и помогать с клипами и голосовыми.';
     }
     if (/пост|идея|подпись|хэштег|хештег|клип/.test(q)) {
       const ideas = [
@@ -593,7 +663,13 @@
       ];
       return ideas[Math.floor(Math.random() * ideas.length)];
     }
-    return 'Я в офлайн-режиме этого устройства 🙂 Спроси про идеи постов, подписи или хэштеги — с этим помогу и без сети.';
+    if (/голосов|микрофон|запис/.test(q)) {
+      return 'Голосовые в чате: нажми 🎤 у поля ввода, запиши и отправь — волну и длительность увидят все!';
+    }
+    if (/вирус|пульс|популярн|рейтинг/.test(q)) {
+      return 'Вирусометр — фишка BLOOP: оцениваю твой пост до публикации (0–100) и показываю «пульс» после — как быстро он набирает лайки и просмотры 🔥';
+    }
+    return 'Я в офлайн-режиме этого устройства 🙂 Спроси про идеи постов, подписи, хэштеги или Вирусометр — с этим помогу и без сети.';
   }
 
   route('POST', /^\/api\/assistant$/, ({ body }) => {

@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import {
-  db, createUser, getUserById, getUserWithPassword, listUsers,
+  db, getUserById, getUserWithPassword, listUsers,
   createChat, findDirectChat, isMember, chatMemberIds,
   insertMessage, listMessages, listChatsForUser, markRead,
   createPost, getPost, listFeed, listUserPosts, deletePost,
@@ -17,8 +17,9 @@ import {
   listFeedByTag, searchPosts, listTrends, getUserStats,
   addNotification, listNotifications, unreadNotificationsCount, markNotificationsRead,
   extractTags, setPostTags,
+  createUser, findUserByPhone, savePhoneCode, getPhoneCode, bumpPhoneAttempts, deletePhoneCode,
 } from './src/db.js';
-import { hashPassword, verifyPassword, signToken, verifyToken } from './src/auth.js';
+import { hashPassword, verifyPassword, signToken, verifyToken, hashPhoneCode, verifyPhoneCode } from './src/auth.js';
 import { upload, checkUploadSize, mediaKind, publicUrl, MAX_VIDEO_BYTES } from './src/media.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -73,6 +74,20 @@ function saveImage(dataUrl) {
   return `/uploads/${name}`;
 }
 
+// Сохранение голосового сообщения (dataURL audio), лимит 10 МБ ≈ 5 минут.
+const ALLOWED_AUDIO = { 'audio/webm': 'weba', 'audio/mp4': 'm4a', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/wav': 'wav' };
+function saveVoice(dataUrl) {
+  if (typeof dataUrl !== 'string') throw new Error('Голосовое передано некорректно');
+  const match = /^data:(audio\/(?:webm|mp4|ogg|mpeg|wav));base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  if (!match) throw new Error('Поддерживаются аудио WebM/MP4/OGG/MP3/WAV');
+  const bytes = Buffer.from(match[2], 'base64');
+  if (bytes.length === 0) throw new Error('Пустая аудиозапись');
+  if (bytes.length > 10 * 1024 * 1024) throw new Error('Голосовое больше 10 МБ');
+  const name = `${crypto.randomBytes(8).toString('hex')}.${ALLOWED_AUDIO[match[1]]}`;
+  fs.writeFileSync(path.join(UPLOADS_DIR, name), bytes);
+  return `/uploads/${name}`;
+}
+
 // ---------- авторизация REST ----------
 
 function authMiddleware(req, res, next) {
@@ -114,6 +129,73 @@ app.post('/api/login', (req, res) => {
     return fail(res, 401, 'Неверный логин или пароль');
   }
   res.json({ token: signToken(user.id), user: publicUser(user) });
+});
+
+// ---------- вход по номеру телефона (без внешних SMS API) ----------
+// Код генерируется сервером и «доставляется» в лог сервера — внешние
+// сервисы не используются. BLOOP_SMS_DEBUG=1 дополнительно возвращает
+// код в ответе (только для разработки/тестов).
+
+const CODE_TTL_MS = 5 * 60 * 1000;      // код живёт 5 минут
+const CODE_MAX_ATTEMPTS = 5;            // попыток на один код
+const phoneLastSend = new Map();        // phone -> ts, антиспам: 1 код в 30 сек
+
+function normalizePhone(raw) {
+  const s = String(raw || '').replace(/[\s()\u2013\u2014-]/g, '').trim();
+  if (!/^\+?\d{7,15}$/.test(s)) return null;
+  const digits = s.replace(/^\+/, '');
+  return `+${digits}`;
+}
+
+app.post('/api/auth/phone/start', (req, res) => {
+  const phone = normalizePhone(req.body?.phone);
+  if (!phone) return fail(res, 400, 'Введите номер в формате +79991234567 (7–15 цифр)');
+  const last = phoneLastSend.get(phone) || 0;
+  if (Date.now() - last < 30 * 1000) return fail(res, 429, 'Код уже отправлен — подождите 30 секунд');
+  phoneLastSend.set(phone, Date.now());
+  const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+  savePhoneCode(phone, hashPhoneCode(phone, code), Date.now() + CODE_TTL_MS);
+  const smsDebug = process.env.BLOOP_SMS_DEBUG === '1';
+  console.log(`📱 SMS (локальная доставка, без внешних API): код для ${phone}: ${code}`);
+  res.json({
+    ok: true,
+    ttl_sec: Math.floor(CODE_TTL_MS / 1000),
+    delivery: 'console', // без внешнего SMS-шлюза код виден в логе сервера
+    ...(smsDebug ? { debug_code: code } : {}),
+  });
+});
+
+app.post('/api/auth/phone/verify', (req, res) => {
+  const phone = normalizePhone(req.body?.phone);
+  const code = String(req.body?.code || '').trim();
+  if (!phone) return fail(res, 400, 'Неверный номер телефона');
+  const rec = getPhoneCode(phone);
+  if (!rec) return fail(res, 400, 'Сначала запросите код');
+  if (Date.now() > rec.expires) {
+    deletePhoneCode(phone);
+    return fail(res, 400, 'Код истёк — запросите новый');
+  }
+  if (rec.attempts >= CODE_MAX_ATTEMPTS) {
+    deletePhoneCode(phone);
+    return fail(res, 429, 'Слишком много попыток — запросите новый код');
+  }
+  if (!code || !verifyPhoneCode(phone, code, rec.code_hash)) {
+    bumpPhoneAttempts(phone);
+    return fail(res, 401, `Неверный код (осталось ${CODE_MAX_ATTEMPTS - rec.attempts - 1} попыток)`);
+  }
+  deletePhoneCode(phone);
+
+  let user = findUserByPhone(phone);
+  let created = false;
+  if (!user) {
+    // Новый аккаунт: логин из хвоста номера, имя можно указать в форме.
+    let username = `user${phone.replace(/\D/g, '').slice(-9)}`;
+    if (getUserWithPassword(username)) username = `${username}${crypto.randomInt(10, 99)}`;
+    const displayName = String(req.body?.display_name || '').trim().slice(0, 40) || `Гость ${phone.slice(-4)}`;
+    user = createUser({ username, displayName, passwordHash: '', phone });
+    created = true;
+  }
+  res.json({ token: signToken(user.id), user: publicUser(user), created });
 });
 
 const api = express.Router();
@@ -168,16 +250,22 @@ api.get('/chats/:id/messages', (req, res) => {
 api.post('/chats/:id/messages', (req, res) => {
   const chatId = Number(req.params.id);
   if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
-  const { text, image } = req.body || {};
+  const { text, image, voice } = req.body || {};
   let imagePath = null;
+  let mediaKind = 'image';
   try {
     if (image) imagePath = saveImage(image);
+    if (voice) {
+      if (imagePath) return fail(res, 400, 'Нельзя отправить картинку и голосовое одновременно');
+      imagePath = saveVoice(voice);
+      mediaKind = 'voice';
+    }
   } catch (e) {
     return fail(res, 400, e.message);
   }
   const body = String(text || '').trim().slice(0, 4000);
   if (!body && !imagePath) return fail(res, 400, 'Пустое сообщение');
-  const message = insertMessage(chatId, req.user.id, body, imagePath);
+  const message = insertMessage(chatId, req.user.id, body, imagePath, mediaKind);
   io.to(`chat:${chatId}`).emit('message', message);
   res.json({ message });
 });
@@ -388,11 +476,11 @@ api.post('/me/avatar', upload.single('file'), (req, res) => {
   res.json({ user: publicUser(user) });
 });
 
-// ---------- нейропомощник «Нейро» ----------
+// ---------- нейропомощник «Floop» ----------
 
 const AI_SYSTEM_PROMPT = [
-  'Ты Нейро — дружелюбный и умный встроенный помощник соцсети BLOOP.',
-  'В BLOOP есть лента постов, клипы, раздел видео, профили и личные чаты.',
+  'Ты Floop — дружелюбный и умный встроенный помощник соцсети BLOOP.',
+  'В BLOOP есть лента постов, клипы (можно снимать прямо в приложении), раздел видео, профили, чаты с голосовыми сообщениями и Вирусометр.',
   'Отвечай на русском языке, кратко (1–6 предложений), живо и по делу.',
   'Помогай придумывать идеи постов, подписи к фото и клипам, хэштеги, отвечай на общие вопросы.',
   'Используй эмодзи умеренно. Не выдумывай функции BLOOP, которых нет.',
@@ -409,10 +497,10 @@ async function getZai() {
 function assistantFallback(question) {
   const q = String(question || '').toLowerCase();
   if (/привет|здравств|хай|hello/.test(q)) {
-    return 'Привет! 👋 Я Нейро — помощник BLOOP. Могу придумать идею поста, подпись к клипу, подобрать хэштеги или просто поболтать. Спрашивай!';
+    return 'Привет! 👋 Я Floop — помощник BLOOP. Могу придумать идею поста, подпись к клипу, подобрать хэштеги или просто поболтать. Спрашивай!';
   }
   if (/что (ты )?умеешь|помощь|help|умеешь/.test(q)) {
-    return 'Я умею: придумывать идеи постов и подписи к фото 📝, подбирать хэштеги, отвечать на вопросы и подсказывать идеи для клипов. Просто напиши вопрос!';
+    return 'Я умею: придумывать идеи постов и подписи к фото 📝, подбирать хэштеги, оценивать пост через Вирусометр и подсказывать идеи для клипов. Просто напиши вопрос!';
   }
   if (/пост|идея|подпись|хэштег|хештег|клип/.test(q)) {
     const ideas = [
@@ -421,6 +509,9 @@ function assistantFallback(question) {
       'Хэштеги для ленты: #bloop #интересное #клипы #мысли — не больше 5 на пост.',
     ];
     return ideas[Math.floor(Math.random() * ideas.length)];
+  }
+  if (/голосов|микрофон|запис/.test(q)) {
+    return 'Голосовые записываются прямо в чате: нажми 🎤 у поля ввода, говори, потом ⏹ для отправки. Длительность и волну увидят все участники чата!';
   }
   return 'Сейчас нейросеть недоступна в этом окружении, но я всё равно здесь 🙂 Попробуй спросить про идеи постов, подписи или хэштеги — с этим я справлюсь и без сети.';
 }

@@ -33,7 +33,7 @@ let videoModalPost = null;
 const viewedPosts = new Set();       // просмотры за сессию
 let feedMode = { kind: 'all', value: null }; // 'all' | 'tag' | 'search'
 let notifUnread = 0;
-let aiHistory = [];                  // диалог с Нейро
+let aiHistory = [];                  // диалог с Floop
 let aiBusy = false;
 
 /* ---------- API ---------- */
@@ -179,6 +179,7 @@ document.querySelectorAll('.auth-tabs .tab').forEach((btn) => {
     btn.classList.add('active');
     $('#login-form').classList.toggle('hidden', btn.dataset.tab !== 'login');
     $('#register-form').classList.toggle('hidden', btn.dataset.tab !== 'register');
+    $('#phone-form').classList.toggle('hidden', btn.dataset.tab !== 'phone');
     $('#auth-error').textContent = '';
   });
 });
@@ -213,6 +214,75 @@ $('#register-form').addEventListener('submit', async (e) => {
       },
     });
     localStorage.setItem('bloop_token', data.token);
+    enterApp(data.user);
+  } catch (err) {
+    authFail(err.message);
+  }
+});
+
+/* ---------- вход по номеру телефона (6-значный код без внешних API) ---------- */
+
+const phoneState = { phone: null, timer: null, left: 0 };
+
+function phoneShow(step) {
+  $('#phone-step-1').classList.toggle('hidden', step !== 1);
+  $('#phone-step-2').classList.toggle('hidden', step !== 2);
+}
+
+function phoneTickTimer() {
+  if (phoneState.left <= 0) {
+    $('#phone-timer').textContent = '';
+    clearInterval(phoneState.timer);
+    phoneState.timer = null;
+    return;
+  }
+  phoneState.left -= 1;
+  $('#phone-timer').textContent = `Код действует ${Math.floor(phoneState.left / 60)}:${String(phoneState.left % 60).padStart(2, '0')}`;
+}
+
+async function phoneStart() {
+  const phone = $('#phone-number').value.trim();
+  if (!phone) { authFail('Введите номер телефона'); return; }
+  const btn = $('#phone-send-code');
+  btn.disabled = true;
+  try {
+    const data = await api('/api/auth/phone/start', { method: 'POST', body: { phone } });
+    phoneState.phone = phone;
+    phoneState.left = data.ttl_sec || 300;
+    phoneShow(2);
+    $('#phone-code').value = '';
+    $('#phone-code').focus();
+    clearInterval(phoneState.timer);
+    phoneTickTimer();
+    phoneState.timer = setInterval(phoneTickTimer, 1000);
+    // Локальная доставка: в офлайн-приложении SMS-шлюза нет — код показываем сразу
+    if (data.local_code) {
+      toast(`📡 SMS от BLOOP: код ${data.local_code}`, 15000);
+    } else {
+      toast('📱 Код отправлен — он виден в консоли сервера (без внешних SMS API)', 6000);
+    }
+  } catch (err) {
+    authFail(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$('#phone-send-code').addEventListener('click', phoneStart);
+$('#phone-resend').addEventListener('click', phoneStart);
+
+$('#phone-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const code = $('#phone-code').value.trim();
+  if (!/^\d{6}$/.test(code)) { authFail('Код состоит из 6 цифр'); return; }
+  try {
+    const data = await api('/api/auth/phone/verify', {
+      method: 'POST',
+      body: { phone: phoneState.phone, code, display_name: $('#phone-display').value.trim() },
+    });
+    localStorage.setItem('bloop_token', data.token);
+    clearInterval(phoneState.timer);
+    toast(data.created ? '🎉 Аккаунт создан по номеру телефона!' : '👋 С возвращением!');
     enterApp(data.user);
   } catch (err) {
     authFail(err.message);
@@ -449,7 +519,9 @@ function msgEl(m) {
     el.appendChild(sender);
   }
 
-  if (m.image) {
+  if (m.image && m.media_kind === 'voice') {
+    el.appendChild(voiceBubble(m));
+  } else if (m.image) {
     const img = document.createElement('img');
     img.className = 'img';
     img.src = m.image;
@@ -471,6 +543,46 @@ function msgEl(m) {
   foot.textContent = hhmm(m.created_at);
   el.appendChild(foot);
   return el;
+}
+
+/* Голосовое сообщение: плеер с прогрессом и волной */
+function voiceBubble(m) {
+  const wrap = document.createElement('div');
+  wrap.className = 'voice-bubble';
+  const play = document.createElement('button');
+  play.className = 'vb-play';
+  play.textContent = '▶';
+  const wave = document.createElement('div');
+  wave.className = 'vb-wave';
+  for (let i = 0; i < 22; i++) {
+    const bar = document.createElement('span');
+    bar.style.height = `${8 + Math.round(14 * Math.abs(Math.sin(i * 1.7 + (m.id || 0))))}px`;
+    wave.appendChild(bar);
+  }
+  const time = document.createElement('span');
+  time.className = 'vb-time';
+  time.textContent = '…';
+
+  const audio = new Audio(m.image); // голосовое хранится в поле image
+  let playing = false;
+  audio.onloadedmetadata = () => { time.textContent = formatDuration(audio.duration); };
+  play.addEventListener('click', () => {
+    if (playing) { audio.pause(); return; }
+    document.querySelectorAll('.voice-bubble audio').forEach(a => a.pause());
+    audio.play();
+  });
+  audio.onplay = () => { playing = true; play.textContent = '⏸'; };
+  audio.onpause = () => { playing = false; play.textContent = '▶'; audio.currentTime = 0; };
+  audio.ontimeupdate = () => {
+    const p = audio.duration ? audio.currentTime / audio.duration : 0;
+    wave.style.setProperty('--vb-progress', `${Math.round(p * 100)}%`);
+  };
+  audio.onended = () => { audio.onpause?.(); };
+
+  wrap.appendChild(play);
+  wrap.appendChild(wave);
+  wrap.appendChild(time);
+  return wrap;
 }
 
 function appendMessage(m) {
@@ -572,15 +684,17 @@ function clearPendingImage() {
 
 async function sendMessage() {
   const text = input.value.trim();
-  if (!currentChatId || (!text && !pendingImage)) return;
+  if (!currentChatId || (!text && !pendingImage && !pendingVoice)) return;
   input.value = '';
   input.style.height = 'auto';
   const image = pendingImage;
+  const voice = pendingVoice;
+  pendingVoice = null;
   clearPendingImage();
   try {
     const { message } = await api(`/api/chats/${currentChatId}/messages`, {
       method: 'POST',
-      body: { text, image },
+      body: { text, image, voice: voice?.dataUrl || null },
     });
     const list = messagesByChat.get(currentChatId) || [];
     if (!list.some(x => x.id === message.id)) { // событие из сокета могло прийти раньше ответа
@@ -593,6 +707,69 @@ async function sendMessage() {
     alert('Не отправлено: ' + err.message);
   }
 }
+
+/* ---------- голосовые сообщения ---------- */
+
+let pendingVoice = null; // { dataUrl }
+let voiceRecorder = null;
+let voiceChunks = [];
+let voiceStream = null;
+let voiceStartedAt = 0;
+let voiceTimer = null;
+
+$('#btn-voice').addEventListener('click', async () => {
+  if (!currentChatId) return;
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    alert('Микрофон недоступен в этом браузере');
+    return;
+  }
+  try {
+    voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    alert('Доступ к микрофону запрещён — разрешите его в настройках');
+    return;
+  }
+  clearPendingImage();
+  voiceChunks = [];
+  const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus']
+    .find(t => MediaRecorder.isTypeSupported?.(t)) || '';
+  voiceRecorder = new MediaRecorder(voiceStream, mime ? { mimeType: mime } : undefined);
+  voiceRecorder.ondataavailable = (e) => { if (e.data.size) voiceChunks.push(e.data); };
+  voiceRecorder.onstop = () => {
+    voiceStream.getTracks().forEach(t => t.stop());
+    clearInterval(voiceTimer);
+    $('#voice-rec').classList.add('hidden');
+    const duration = (Date.now() - voiceStartedAt) / 1000;
+    if (duration < 1) { toast('Запись слишком короткая'); return; }
+    const blob = new Blob(voiceChunks, { type: voiceRecorder.mimeType || 'audio/webm' });
+    const reader = new FileReader();
+    reader.onload = () => {
+      pendingVoice = { dataUrl: reader.result };
+      sendMessage();
+    };
+    reader.readAsDataURL(blob);
+  };
+  voiceRecorder.start();
+  voiceStartedAt = Date.now();
+  $('#voice-time').textContent = '0:00';
+  $('#voice-rec').classList.remove('hidden');
+  voiceTimer = setInterval(() => {
+    $('#voice-time').textContent = formatDuration((Date.now() - voiceStartedAt) / 1000);
+  }, 250);
+});
+
+$('#voice-stop').addEventListener('click', () => {
+  if (voiceRecorder?.state === 'recording') voiceRecorder.stop();
+});
+
+$('#voice-cancel').addEventListener('click', () => {
+  if (voiceRecorder) voiceRecorder.onstop = null; // остановка без отправки
+  if (voiceRecorder?.state === 'recording') voiceRecorder.stop();
+  voiceStream?.getTracks().forEach(t => t.stop());
+  clearInterval(voiceTimer);
+  $('#voice-rec').classList.add('hidden');
+  toast('Запись отменена');
+});
 
 /* ---------- поиск людей и чаты ---------- */
 
@@ -973,6 +1150,7 @@ $('#post-file').addEventListener('change', async () => {
   try {
     const up = await uploadFile(file);
     pendingPostMedia = { url: up.url, kind: up.kind };
+    renderViralMeter();
     box.replaceChildren();
     const img = document.createElement('img');
     img.src = up.url;
@@ -1010,6 +1188,7 @@ $('#post-submit').addEventListener('click', async () => {
     $('#post-file').value = '';
     $('#composer-media').classList.add('hidden');
     $('#composer-media').replaceChildren();
+    $('#viral-meter').classList.add('hidden');
     // сокет-событие post:new могло прийти раньше ответа — не дублируем
     if (!feedPosts.some(p => p.id === post.id)) feedPosts.unshift(post);
     renderFeed();
@@ -1022,6 +1201,85 @@ $('#post-submit').addEventListener('click', async () => {
 });
 
 $('#btn-feed-more').addEventListener('click', () => loadFeed());
+
+/* =====================================================================
+   🔥 Вирусометр Floop — уникальная фишка BLOOP
+   Оценивает пост ДО публикации (по правилам, без нейросети) и показывает
+   «пульс» публикации ПОСЛЕ — как быстро она набирает лайки и просмотры.
+   ===================================================================== */
+
+function viralityScore({ text, mediaKind }) {
+  const t = String(text || '');
+  const len = t.length;
+  const tagCount = (t.match(/#([\p{L}\p{N}_]{2,30})/gu) || []).length;
+  let score = 25;
+  const good = [], tips = [], bad = [];
+
+  if (len >= 60 && len <= 220) { score += 18; good.push('Длина 60–220 символов — пост дочитывают до конца'); }
+  else if (len > 0 && len < 60) tips.push('Добавь ещё 1–2 предложения: совсем короткие посты пролетают мимо');
+  else if (len > 400) { score -= 8; bad.push('Слишком длинно — сократи до сути'); }
+
+  if (/\?/.test(t)) { score += 12; good.push('Вопрос в тексте провоцирует комментарии'); }
+  else tips.push('Задай вопрос читателям — так пост собирает обсуждение');
+
+  if (tagCount >= 1 && tagCount <= 3) { score += 15; good.push('1–3 хэштега — оптимально для трендов'); }
+  else if (tagCount > 5) { score -= 10; bad.push('Больше 5 хэштегов выглядит как спам'); }
+  else if (len) tips.push('Добавь 1–3 хэштега — попадёшь в тренды недели');
+
+  if (mediaKind === 'video') { score += 16; good.push('Видео удерживает внимание дольше всего'); }
+  else if (mediaKind === 'image') { score += 10; good.push('Картинка ускоряет чтение поста'); }
+
+  const emoji = (t.match(/\p{Extended_Pictographic}/gu) || []).length;
+  if (emoji >= 1 && emoji <= 3) { score += 8; good.push('Пара эмодзи оживляет текст'); }
+  else if (emoji > 6) { score -= 6; bad.push('Много эмодзи снижает доверие'); }
+
+  const letters = t.replace(/[^A-Za-zА-Яа-яЁё]/g, '');
+  if (letters.length > 12 && letters === letters.toUpperCase()) { score -= 15; bad.push('КАПС читается как крик — снизь тон'); }
+
+  const h = new Date().getHours();
+  if ((h >= 11 && h < 14) || (h >= 18 && h < 23)) { score += 10; good.push('Сейчас пиковая активность в ленте'); }
+  else tips.push('Пик ленты: 11:00–13:00 и 18:00–22:00 — публикуй в это время');
+
+  return {
+    score: Math.max(5, Math.min(100, Math.round(score))),
+    advice: [...bad, ...tips.slice(0, 1), ...good.slice(0, 2)].slice(0, 3),
+  };
+}
+
+function renderViralMeter() {
+  const text = $('#post-text').value.trim();
+  const meter = $('#viral-meter');
+  if (!text && !pendingPostMedia) { meter.classList.add('hidden'); return; }
+  meter.classList.remove('hidden');
+  const { score, advice } = viralityScore({ text, mediaKind: pendingPostMedia?.kind || null });
+  $('#vm-score').textContent = `${score}/100`;
+  $('#vm-score').dataset.level = score >= 70 ? 'hot' : score >= 45 ? 'warm' : 'cold';
+  const fill = $('#vm-fill');
+  fill.style.width = `${score}%`;
+  fill.dataset.level = score >= 70 ? 'hot' : score >= 45 ? 'warm' : 'cold';
+  const tips = $('#vm-tips');
+  tips.replaceChildren();
+  for (const a of advice) {
+    const row = document.createElement('div');
+    row.className = 'vm-tip';
+    row.textContent = (a === advice[0] && (advice[0].startsWith('Добавь') || advice[0].startsWith('Задай') || advice[0].startsWith('Слишком') || advice[0].startsWith('Больше') || advice[0].startsWith('КАПС') || advice[0].startsWith('Много')) ? '💡 ' : '✅ ') + a;
+    tips.appendChild(row);
+  }
+}
+
+$('#post-text').addEventListener('input', renderViralMeter);
+
+/* Пульс публикации: динамика лайков и просмотров в первые 48 часов */
+function pulseBadge(p) {
+  const ageH = (Date.now() - new Date(p.created_at + 'Z').getTime()) / 3600000;
+  if (ageH > 48 || !p.views) return null;
+  const engagement = (p.likes || 0) + 2 * (p.comments_count || 0);
+  const perHour = engagement / Math.max(ageH, 0.5);
+  if (perHour >= 1.5 && p.views >= 5) return { cls: 'hot', label: '🔥 Горит' };
+  if (perHour >= 0.5) return { cls: 'warm', label: '📈 Набирает обороты' };
+  if (perHour >= 0.2 && p.views >= 3) return { cls: 'fresh', label: '🌱 Растёт' };
+  return null;
+}
 
 /* просмотры ленты */
 const viewObserver = new IntersectionObserver((entries) => {
@@ -1066,6 +1324,14 @@ function postCardEl(p) {
   who.append(nameEl, timeEl);
   who.addEventListener('click', () => openProfile(p.author.id));
   head.append(av, who);
+  const pulse = pulseBadge(p);
+  if (pulse) {
+    const badge = document.createElement('span');
+    badge.className = `pulse-badge ${pulse.cls}`;
+    badge.title = 'Пульс публикации по Вирусометру Floop';
+    badge.textContent = pulse.label;
+    head.appendChild(badge);
+  }
 
   if (p.author.id === me.id) {
     const del = document.createElement('button');
@@ -1546,6 +1812,107 @@ $('#upload-submit').addEventListener('click', async () => {
 });
 
 /* =====================================================================
+   Съёмка рилса прямо в приложении (камера + MediaRecorder)
+   ===================================================================== */
+
+const camState = {
+  stream: null, recorder: null, chunks: [], startedAt: 0,
+  timer: null, facing: 'user', blob: null, url: null,
+};
+
+async function camStartStream() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    $('#cam-hint').textContent = 'Камера недоступна в этом браузере';
+    return false;
+  }
+  camState.stream?.getTracks().forEach(t => t.stop());
+  try {
+    camState.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: camState.facing, width: { ideal: 720 }, height: { ideal: 1280 } },
+      audio: true,
+    });
+  } catch {
+    $('#cam-hint').textContent = 'Разрешите доступ к камере и микрофону в настройках';
+    return false;
+  }
+  $('#cam-preview').srcObject = camState.stream;
+  $('#cam-hint').classList.add('hidden');
+  return true;
+}
+
+function camResetResult() {
+  if (camState.url) URL.revokeObjectURL(camState.url);
+  camState.blob = null;
+  camState.url = null;
+  $('#cam-result').classList.add('hidden');
+  $('#cam-preview').classList.remove('hidden');
+  $('#cam-publish').classList.add('hidden');
+  $('#cam-record').classList.remove('hidden');
+}
+
+async function openCamera() {
+  $('#camera-modal').classList.remove('hidden');
+  camResetResult();
+  await camStartStream();
+}
+
+function closeCamera() {
+  clearInterval(camState.timer);
+  camState.recorder?.state === 'recording' && camState.recorder.stop();
+  camState.stream?.getTracks().forEach(t => t.stop());
+  $('#camera-modal').classList.add('hidden');
+}
+
+$('#upload-record').addEventListener('click', openCamera);
+$('#camera-close').addEventListener('click', closeCamera);
+
+$('#cam-flip').addEventListener('click', async () => {
+  camState.facing = camState.facing === 'user' ? 'environment' : 'user';
+  await camStartStream();
+  if (camState.blob) camResetResult();
+});
+
+$('#cam-record').addEventListener('click', () => {
+  if (!camState.stream) return;
+  if (camState.recorder?.state === 'recording') { camState.recorder.stop(); return; }
+  camState.chunks = [];
+  const mime = ['video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']
+    .find(t => MediaRecorder.isTypeSupported?.(t)) || '';
+  camState.recorder = new MediaRecorder(camState.stream, mime ? { mimeType: mime } : undefined);
+  camState.recorder.ondataavailable = (e) => { if (e.data.size) camState.chunks.push(e.data); };
+  camState.recorder.onstop = () => {
+    clearInterval(camState.timer);
+    camState.blob = new Blob(camState.chunks, { type: camState.recorder.mimeType || 'video/webm' });
+    camState.url = URL.createObjectURL(camState.blob);
+    $('#cam-preview').classList.add('hidden');
+    const res = $('#cam-result');
+    res.src = camState.url;
+    res.classList.remove('hidden');
+    $('#cam-publish').classList.remove('hidden');
+    $('#cam-record').classList.add('hidden');
+    $('#cam-timer').classList.add('hidden');
+  };
+  camState.recorder.start();
+  camState.startedAt = Date.now();
+  $('#cam-timer').classList.remove('hidden');
+  camState.timer = setInterval(() => {
+    const sec = Math.floor((Date.now() - camState.startedAt) / 1000);
+    $('#cam-timer').textContent = `${formatDuration(sec)} / 1:00`;
+    if (sec >= 60 && camState.recorder.state === 'recording') camState.recorder.stop(); // максимум 1 минута
+  }, 250);
+});
+
+$('#cam-publish').addEventListener('click', () => {
+  if (!camState.blob) return;
+  pendingUploadFile = camState.blob;
+  $('#upload-file-label').textContent = `Снято в приложении: ${formatDuration((Date.now() - camState.startedAt) / 1000)} — можно писать описание`;
+  $('#upload-file').value = '';
+  closeCamera();
+  $('#upload-modal').classList.remove('hidden');
+  toast('🎬 Рилс снят! Добавь описание и публикуй');
+});
+
+/* =====================================================================
    Модалка комментариев
    ===================================================================== */
 
@@ -1636,7 +2003,7 @@ function renderProfile() {
   if (user.id === me.id) {
     const ai = document.createElement('button');
     ai.className = 'ai-open-btn';
-    ai.textContent = '🤖 Нейропомощник';
+    ai.textContent = '🤖 Floop — нейропомощник';
     ai.title = 'Задать вопрос умному помощнику';
     ai.addEventListener('click', openAiModal);
     actions.appendChild(ai);
@@ -1925,7 +2292,7 @@ function updatePostCounters(postId) {
 }
 
 /* =====================================================================
-   Нейропомощник «Нейро»
+   Нейропомощник «Floop»
    ===================================================================== */
 
 const AI_SUGGESTIONS = ['Что ты умеешь?', 'Идея для поста', 'Подпись к фото с дня рождения', 'Хэштеги для клипа'];
@@ -1957,7 +2324,7 @@ function renderAiList() {
   list.replaceChildren();
   if (aiHistory.length === 0) {
     list.appendChild(aiBubble('assistant',
-      'Привет! Я Нейро — умный помощник BLOOP 🤖\nСпроси что угодно: придумать пост, подпись к клипу, подобрать хэштеги или просто поболтать.'));
+      'Привет! Я Floop — умный помощник BLOOP 🤖\nСпроси что угодно: придумать пост, подпись к клипу, подобрать хэштеги или просто поболтать.'));
     return;
   }
   for (const m of aiHistory) list.appendChild(aiBubble(m.role, m.content));

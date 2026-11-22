@@ -17,10 +17,17 @@ export const EXT_BY_MIME = {
   'video/mp4': 'mp4',
   'video/webm': 'webm',
   'video/quicktime': 'mov',
+  // голосовые сообщения
+  'audio/webm': 'weba',
+  'audio/mp4': 'm4a',
+  'audio/ogg': 'ogg',
+  'audio/mpeg': 'mp3',
+  'audio/wav': 'wav',
 };
 
 export const MAX_VIDEO_BYTES = 300 * 1024 * 1024; // 300 МБ
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;  // 10 МБ
+export const MAX_VOICE_BYTES = 25 * 1024 * 1024;  // 25 МБ (голосовое до ~5 минут)
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOADS_DIR),
@@ -43,13 +50,20 @@ export const upload = multer({
 
 // После multer проверяем лимит размера для конкретного типа.
 export function checkUploadSize(file) {
-  const isVideo = file.mimetype.startsWith('video/');
-  const max = isVideo ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+  const max = maxBytesFor(file.mimetype);
   return file.size <= max;
 }
 
+export function maxBytesFor(mimetype) {
+  if (mimetype.startsWith('video/')) return MAX_VIDEO_BYTES;
+  if (mimetype.startsWith('audio/')) return MAX_VOICE_BYTES;
+  return MAX_IMAGE_BYTES;
+}
+
 export function mediaKind(mimetype) {
-  return mimetype.startsWith('video/') ? 'video' : 'image';
+  if (mimetype.startsWith('video/')) return 'video';
+  if (mimetype.startsWith('audio/')) return 'voice';
+  return 'image';
 }
 
 export function publicUrl(filename) {

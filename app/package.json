@@ -1,0 +1,18 @@
+{
+  "name": "bloop-app",
+  "private": true,
+  "version": "3.0.0",
+  "description": "BLOOP Android (Capacitor): автономный локальный режим без сервера",
+  "scripts": {
+    "build:www": "node build-www.mjs",
+    "apk": "npm run build:www && npx cap sync android && cd android && ./gradlew assembleDebug"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.1",
+    "@capacitor/core": "^6.2.1"
+  },
+  "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^6.2.1"
+  }
+}

@@ -3,6 +3,12 @@
 const $ = (sel) => document.querySelector(sel);
 
 const token = () => localStorage.getItem('bloop_token') || '';
+
+/* Локальный режим (Android APK): «сервер» работает внутри приложения.
+   Включается конфигом window.BLOOP_CONFIG.mode === 'local' или ?local=1 для отладки. */
+const LOCAL_MODE = window.BLOOP_CONFIG?.mode === 'local' || location.search.includes('local=1');
+const localServer = () => window.__BLOOP_LOCAL__;
+
 let me = null;
 let chats = [];
 let usersCache = new Map();          // id -> {id, username, display_name, avatar, online}
@@ -32,14 +38,31 @@ let aiBusy = false;
 
 /* ---------- API ---------- */
 
-async function api(path, { method = 'GET', body } = {}) {
+async function api(path, { method = 'GET', body, headers } = {}) {
+  if (LOCAL_MODE) {
+    const res = await localServer().request(path, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token() ? { Authorization: `Bearer ${token()}` } : {}),
+      },
+      body: body === undefined ? undefined : (body instanceof FormData ? body : JSON.stringify(body)),
+    });
+    if (res.status >= 400) {
+      const err = new Error(res.data?.error || `Ошибка ${res.status}`);
+      err.status = res.status;
+      throw err;
+    }
+    return res.data;
+  }
   const res = await fetch(path, {
     method,
     headers: {
       'Content-Type': 'application/json',
+      ...(headers || {}),
       ...(token() ? { Authorization: `Bearer ${token()}` } : {}),
     },
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : (body instanceof FormData ? body : JSON.stringify(body)),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
@@ -51,6 +74,7 @@ async function api(path, { method = 'GET', body } = {}) {
 }
 
 async function uploadFile(file) {
+  if (LOCAL_MODE) return localServer().storeFile(file);
   const fd = new FormData();
   fd.append('file', file);
   const res = await fetch('/api/upload', {
@@ -671,8 +695,22 @@ $('#btn-back').addEventListener('click', () => {
 
 /* ---------- сокет ---------- */
 
-function connectSocket() {
-  socket = io({ auth: { token: token() } });
+async function connectSocket() {
+  if (LOCAL_MODE) {
+    socket = new localServer().LocalSocket(); // локальная шина событий
+  } else {
+    // socket.io грузим динамически: в автономной сборке его нет
+    if (typeof io === 'undefined') {
+      await new Promise((resolve) => {
+        const s = document.createElement('script');
+        s.src = '/socket.io/socket.io.js';
+        s.onload = resolve;
+        s.onerror = resolve;
+        document.head.appendChild(s);
+      });
+    }
+    socket = io({ auth: { token: token() } });
+  }
 
   socket.on('connect', () => {
     // после переподключения могли быть пропущены сообщения
@@ -780,6 +818,7 @@ function connectSocket() {
   });
 
   socket.on('notification', ({ notification, unread }) => {
+    if (notification.user_id !== me.id) return; // адресность (важно в локальном режиме)
     setNotifBadge(unread);
     const text = notification.type === 'like'
       ? `❤️ ${notification.actor_name} лайкнул(а) вашу публикацию`
@@ -1730,13 +1769,7 @@ $('#edit-file').addEventListener('change', async () => {
   try {
     const fd = new FormData();
     fd.append('file', file);
-    const res = await fetch('/api/me/avatar', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token()}` },
-      body: fd,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `Ошибка ${res.status}`);
+    const data = await api('/api/me/avatar', { method: 'POST', body: fd });
     me = { ...me, ...data.user };
     const av = avatarEl(me);
     av.classList.add('big');
@@ -2014,6 +2047,7 @@ applyTheme();
 /* ---------- старт ---------- */
 
 (async function init() {
+  if (LOCAL_MODE) await window.__BLOOP_LOCAL_READY__; // гидрация медиа из IndexedDB
   if (!token()) return; // остаёмся на экране входа
   try {
     const { user } = await api('/api/me');

@@ -144,12 +144,14 @@ export async function runBotEvent({ bot, chatId, user, event, emitMessage }) {
     keys: () => Object.keys(stateData),
   };
 
+  const replies = []; // реплики бота — сервер вернёт их в HTTP-ответе
   const reply = (text, opts = {}) => {
     const t = String(text ?? '').trim().slice(0, 4000);
     if (!t) throw new Error('ctx.reply: текст пуст');
     const kb = opts?.keyboard ? normalizeKeyboard(opts.keyboard) : null;
     const msg = insertMessage(chatId, bot.user_id, t, null, 'image', null, kb);
     bumpBotMsgs(bot.id);
+    replies.push(msg);
     if (typeof emitMessage === 'function') emitMessage(msg);
     return msg;
   };
@@ -201,7 +203,7 @@ export async function runBotEvent({ bot, chatId, user, event, emitMessage }) {
 
   if (dirty) setBotState(bot.id, stateData);
   if (logs.length) appendBotLogs(bot.id, logs);
-  return { logs, error };
+  return { logs, error, replies };
 }
 
 /* ---------- шаблоны кода для редактора ---------- */

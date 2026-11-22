@@ -234,10 +234,10 @@ api.post('/chats', async (req, res) => {
       type: 'direct', createdBy: req.user.id,
       memberIds: [req.user.id, peer.id],
     });
-    emitChatNew(chatId, [peer.id]);
+    emitChatNew(chatId, [req.user.id, peer.id]); // создатель тоже — иначе его сокет не в комнате
     // первый заход в чат с ботом — событие start (как /start в Telegram)
     const startBot = peer.is_bot ? getBotByUserId(peer.id) : null;
-    if (startBot) runBotSafe(startBot, chatId, req.user, { kind: 'start' });
+    if (startBot) await runBotAwaited(startBot, chatId, req.user, { kind: 'start' }); // приветствие в базе до ответа
     return res.json({ chat_id: chatId, existed: false });
   }
   if (type === 'group') {
@@ -248,7 +248,7 @@ api.post('/chats', async (req, res) => {
       if (!getUserById(id)) return fail(res, 404, `Пользователь ${id} не найден`);
     }
     const chatId = createChat({ type: 'group', name: title, createdBy: req.user.id, memberIds: ids });
-    emitChatNew(chatId, ids.filter(id => id !== req.user.id));
+    emitChatNew(chatId, ids); // включая создателя — его сокет должен слушать комнату
     return res.json({ chat_id: chatId, existed: false });
   }
   return fail(res, 400, 'Неизвестный тип чата');
@@ -262,7 +262,7 @@ api.get('/chats/:id/messages', (req, res) => {
   res.json({ messages: listMessages(chatId, { before, limit, viewerId: req.user.id }) });
 });
 
-api.post('/chats/:id/messages', (req, res) => {
+api.post('/chats/:id/messages', async (req, res) => {
   const chatId = Number(req.params.id);
   if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
   const { text, image, voice, reply_to } = req.body || {};
@@ -290,14 +290,15 @@ api.post('/chats/:id/messages', (req, res) => {
   io.to(`chat:${chatId}`).emit('message', message);
   // если это чат с ботом — передаём сообщение движку и в очередь обновлений
   const msgBot = chatBot(chatId);
+  let botMessages = [];
   if (msgBot) {
     pushBotUpdate(msgBot.id, {
       type: 'message', chat_id: chatId, text: body, message_id: message.id,
       from: { id: req.user.id, name: req.user.display_name, username: req.user.username },
     });
-    runBotSafe(msgBot, chatId, req.user, { kind: 'message', text: body, message_id: message.id });
+    botMessages = await runBotAwaited(msgBot, chatId, req.user, { kind: 'message', text: body, message_id: message.id });
   }
-  res.json({ message });
+  res.json({ message, bot_messages: botMessages });
 });
 
 // Эмодзи-реакция на сообщении чата
@@ -704,6 +705,20 @@ function botTyping(chatId, botUserId, on) {
   io.to(`chat:${chatId}`).emit('typing', { chat_id: chatId, user_id: botUserId, typing: !!on });
 }
 
+// то же, но с ожиданием: реплики бота возвращаются в HTTP-ответе
+async function runBotAwaited(bot, chatId, user, event) {
+  botTyping(chatId, bot.user_id, true);
+  try {
+    const r = await runBotEvent({ bot, chatId, user, event, emitMessage: (m) => io.to(`chat:${chatId}`).emit('message', m) });
+    return r?.replies || [];
+  } catch (e) {
+    console.error(`бот ${bot.username} упал:`, e);
+    return [];
+  } finally {
+    botTyping(chatId, bot.user_id, false);
+  }
+}
+
 // исполнение события с индикатором «печатает…» и логированием ошибок
 function runBotSafe(bot, chatId, user, event) {
   botTyping(chatId, bot.user_id, true);
@@ -803,7 +818,7 @@ api.get('/bots/doc', (req, res) => {
 
 /* ---------- колбэк инлайн-клавиатуры ---------- */
 
-api.post('/chats/:id/callback', (req, res) => {
+api.post('/chats/:id/callback', async (req, res) => {
   const chatId = Number(req.params.id);
   if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
   const bot = chatBot(chatId);
@@ -814,8 +829,8 @@ api.post('/chats/:id/callback', (req, res) => {
     type: 'callback', chat_id: chatId, data, message_id: messageId,
     from: { id: req.user.id, name: req.user.display_name, username: req.user.username },
   });
-  runBotSafe(bot, chatId, req.user, { kind: 'callback', data, message_id: messageId });
-  res.json({ ok: true });
+  const botMessages = await runBotAwaited(bot, chatId, req.user, { kind: 'callback', data, message_id: messageId });
+  res.json({ ok: true, bot_messages: botMessages });
 });
 
 /* ---------- события из мини-аппа ---------- */
@@ -824,7 +839,7 @@ function openBotChatFor(userId, bot) {
   const existing = findDirectChat(userId, bot.user_id);
   if (existing) return { chatId: existing.id, existed: true };
   const chatId = createChat({ type: 'direct', createdBy: userId, memberIds: [userId, bot.user_id] });
-  emitChatNew(chatId, [bot.user_id]);
+  emitChatNew(chatId, [userId, bot.user_id]);
   runBotSafe(bot, chatId, getUserById(userId), { kind: 'start' });
   return { chatId, existed: false };
 }
@@ -835,7 +850,7 @@ api.get('/miniapp/:username/state', (req, res) => {
   res.json({ state: getBotState(bot.id) });
 });
 
-api.post('/miniapp/:username/data', (req, res) => {
+api.post('/miniapp/:username/data', async (req, res) => {
   const bot = getBotByUsername(req.params.username);
   if (!bot || !bot.enabled || !bot.miniapp_enabled) return fail(res, 404, 'Мини-апп не найден');
   const { chatId } = openBotChatFor(req.user.id, bot);
@@ -845,12 +860,8 @@ api.post('/miniapp/:username/data', (req, res) => {
     from: { id: req.user.id, name: req.user.display_name, username: req.user.username },
   });
   // исполнение синхронно ждём: мини-апп хочет свежее состояние в ответе
-  botTyping(chatId, bot.user_id, true);
-  runBotEvent({ bot, chatId, user: req.user, event: { kind: 'miniapp', data }, emitMessage: (m) => io.to(`chat:${chatId}`).emit('message', m) })
-    .then((r) => { if (r?.error) console.error(`бот ${bot.username}:`, r.error); })
-    .catch((e) => console.error(`бот ${bot.username} упал:`, e))
-    .finally(() => botTyping(chatId, bot.user_id, false));
-  res.json({ ok: true, state: getBotState(bot.id) });
+  const botMessages = await runBotAwaited(bot, chatId, req.user, { kind: 'miniapp', data });
+  res.json({ ok: true, state: getBotState(bot.id), bot_messages: botMessages });
 });
 
 /* ---------- Bot HTTP API: доступ по токену бота (getUpdates long polling) ---------- */

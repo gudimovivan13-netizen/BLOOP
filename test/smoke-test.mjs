@@ -70,7 +70,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function main() {
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
   const server = spawn(process.execPath, ['server.js'], {
-    env: { ...process.env, PORT: String(PORT), BLOOP_DATA_DIR: DATA_DIR, BLOOP_SMS_DEBUG: '1' },
+    env: { ...process.env, PORT: String(PORT), BLOOP_DATA_DIR: DATA_DIR, BLOOP_EMAIL_DEBUG: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   server.stdout.on('data', d => process.stdout.write(`[server] ${d}`));
@@ -324,31 +324,103 @@ async function main() {
     const aiBad = await api('/api/assistant', { method: 'POST', token: tokA, body: { messages: [] } });
     check('ассистент без сообщений отклоняется', aiBad.status === 400);
 
-    /* ---------- v4: телефонный вход и голосовые ---------- */
+    /* ---------- v5: вход по почте, истории, опросы, реакции, ответы ---------- */
 
-    const badPhone = await api('/api/auth/phone/start', { method: 'POST', body: { phone: '123' } });
-    check('короткий номер отклоняется', badPhone.status === 400);
+    const badEmail = await api('/api/auth/email/start', { method: 'POST', body: { email: 'broken' } });
+    check('некорректная почта отклоняется', badEmail.status === 400);
 
-    const pStart = await api('/api/auth/phone/start', { method: 'POST', body: { phone: '+79991234567' } });
-    check('код генерируется (debug-режим)', pStart.status === 200 && /^\d{6}$/.test(pStart.data.debug_code || ''));
+    const mailA = `alice_${suffix}@bloop.test`;
+    const eStart = await api('/api/auth/email/start', { method: 'POST', body: { email: mailA } });
+    check('код на почту генерируется (debug-режим)', eStart.status === 200 && /^\d{6}$/.test(eStart.data.debug_code || ''));
+    check('канал доставки отмечен', eStart.data.delivery === 'console');
 
-    const pBad = await api('/api/auth/phone/verify', { method: 'POST', body: { phone: '+79991234567', code: '000000' } });
-    check('неверный код отклоняется', pBad.status === 401);
+    const eBad = await api('/api/auth/email/verify', { method: 'POST', body: { email: mailA, code: '000000' } });
+    check('неверный код отклоняется', eBad.status === 401);
 
-    const pVerify = await api('/api/auth/phone/verify', {
+    const eVerify = await api('/api/auth/email/verify', {
       method: 'POST',
-      body: { phone: '+79991234567', code: pStart.data.debug_code, display_name: 'Телефон Гость' },
+      body: { email: mailA, code: eStart.data.debug_code, display_name: 'Почта Гость' },
     });
-    check('верификация создаёт аккаунт', pVerify.status === 200 && pVerify.data.created === true && !!pVerify.data.token);
-    const pMe = await api('/api/me', { token: pVerify.data.token });
-    check('телефонный токен работает', pMe.status === 200 && pMe.data.user.display_name === 'Телефон Гость');
-    const pSpam = await api('/api/auth/phone/start', { method: 'POST', body: { phone: '+79991234567' } });
-    check('антиспам: второй код за 30 секунд не уходит', pSpam.status === 429);
-    const pOnce = await api('/api/auth/phone/verify', {
+    check('верификация создаёт аккаунт с подтверждённой почтой', eVerify.status === 200 && eVerify.data.created === true && eVerify.data.user?.email_verified === true);
+    const eMe = await api('/api/me', { token: eVerify.data.token });
+    check('почтовый токен работает', eMe.status === 200 && eMe.data.user.display_name === 'Почта Гость');
+
+    const eSpam = await api('/api/auth/email/start', { method: 'POST', body: { email: mailA } });
+    check('антиспам: второй код за 30 секунд не уходит', eSpam.status === 429);
+    const eOnce = await api('/api/auth/email/verify', {
       method: 'POST',
-      body: { phone: '+79991234567', code: pStart.data.debug_code },
+      body: { email: mailA, code: eStart.data.debug_code },
     });
-    check('код одноразовый: после входа не принимается', pOnce.status === 400);
+    check('код одноразовый: после входа не принимается', eOnce.status === 400);
+    const eRepeat = await api('/api/auth/email/verify', {
+      method: 'POST',
+      body: { email: mailA.toLowerCase(), code: '000000' },
+    });
+    check('повторный неверный код не пускает', eRepeat.status === 400);
+
+    console.log('\n— v5: опросы');
+    const pollPost = await api('/api/posts', { method: 'POST', token: tokA, body: { type: 'post', text: 'Выбирай', poll: ['Плюс', 'Минус', 'Всё равно'] } });
+    check('пост с опросом создан', pollPost.status === 200 && pollPost.data.post?.poll?.options?.length === 3);
+    const pollBad = await api('/api/posts', { method: 'POST', token: tokA, body: { type: 'post', poll: ['Один'] } });
+    check('опрос с одним вариантом отклоняется', pollBad.status === 400);
+    const pidP = pollPost.data.post.id;
+    const vote = await api(`/api/posts/${pidP}/poll`, { method: 'POST', token: tokB, body: { option_idx: 1 } });
+    check('голос принят и посчитан', vote.status === 200 && vote.data.poll?.votes?.[1] === 1 && vote.data.poll?.my_vote === 1);
+    const vote2 = await api(`/api/posts/${pidP}/poll`, { method: 'POST', token: tokB, body: { option_idx: 0 } });
+    check('переголосование перезаписывает выбор', vote2.data.poll?.votes?.[1] === 0 && vote2.data.poll?.votes?.[0] === 1);
+    const pollPoll = await api(`/api/posts/${pidP}`, { token: tokA });
+    check('опрос читается из ленты', pollPoll.data.post?.poll?.total === 1);
+
+    console.log('\n— v5: реакции-эмодзи');
+    const rx = await api(`/api/posts/${pid}/react`, { method: 'POST', token: tokA, body: { emoji: '🔥' } });
+    check('реакция 🔥 ставится', rx.status === 200 && rx.data.reactions?.['🔥'] === 1 && rx.data.mine?.includes('🔥'));
+    const rx2 = await api(`/api/posts/${pid}/react`, { method: 'POST', token: tokB, body: { emoji: '🔥' } });
+    check('реакции складываются', rx2.data.reactions?.['🔥'] === 2);
+    const rx3 = await api(`/api/posts/${pid}/react`, { method: 'POST', token: tokA, body: { emoji: '💚' } });
+    check('вторая реакция заменяет первую', rx3.data.reactions?.['🔥'] === 1 && !rx3.data.mine?.includes('🔥') && rx3.data.mine?.includes('💚'));
+    const rxBad = await api(`/api/posts/${pid}/react`, { method: 'POST', token: tokA, body: { emoji: '🚀' } });
+    check('неизвестная реакция отклоняется', rxBad.status === 400);
+    const heart = await api(`/api/posts/${pid}/like`, { method: 'POST', token: tokB });
+    check('лайк работает как реакция ❤️', heart.data.liked === true && heart.data.likes === 1);
+
+    console.log('\n— v5: мгновения (истории на 24 часа)');
+    const story = await api('/api/stories', { method: 'POST', token: tokA, body: { kind: 'text', text: 'Привет из истории!', bg: 'ocean' } });
+    check('текстовое мгновение создано', story.status === 200 && !!story.data.id);
+    const storyBad = await api('/api/stories', { method: 'POST', token: tokA, body: { kind: 'text', text: '  ' } });
+    check('пустое мгновение отклоняется', storyBad.status === 400);
+    const storyImg = await api('/api/stories', { method: 'POST', token: tokB, body: { kind: 'image', image: tinyPng, text: 'фото' } });
+    check('фото-мгновение создано', storyImg.status === 200 && !!storyImg.data.id);
+    const sList = await api('/api/stories', { token: tokB });
+    check('мгновения сгруппированы по авторам', sList.data.users?.length === 2);
+    const sView = await api(`/api/stories/${story.data.id}/view`, { method: 'POST', token: tokB });
+    check('просмотр мгновения считается', sView.status === 200 && sView.data.views === 1);
+    const sDelForeign = await api(`/api/stories/${story.data.id}`, { method: 'DELETE', token: tokB });
+    check('чужое мгновение удалить нельзя', sDelForeign.status === 403);
+    const sDel = await api(`/api/stories/${story.data.id}`, { method: 'DELETE', token: tokA });
+    check('своё мгновение удаляется', sDel.status === 200);
+
+    console.log('\n— v5: ответы и реакции в чатах');
+    const replyMsg = await api(`/api/chats/${chat1.data.chat_id}/messages`, {
+      method: 'POST', token: tokB,
+      body: { text: 'Отвечаю на привет', reply_to: send.data.message.id },
+    });
+    check('ответ с цитатой сохраняется', replyMsg.status === 200 && replyMsg.data.message?.reply?.id === send.data.message.id);
+    const msgRx = await api(`/api/chats/${chat1.data.chat_id}/messages/${send.data.message.id}/react`, { method: 'POST', token: tokB, body: { emoji: '🔥' } });
+    check('реакция на сообщении ставится', msgRx.status === 200 && msgRx.data.reactions?.['🔥'] === 1);
+    const msgRx2 = await api(`/api/chats/${chat1.data.chat_id}/messages/${send.data.message.id}/react`, { method: 'POST', token: tokB, body: { emoji: '🔥' } });
+    check('повторная реакция снимается', msgRx2.status === 200 && !msgRx2.data.reactions?.['🔥']);
+    const foreignRx = await api(`/api/chats/${chat1.data.chat_id}/messages/${send.data.message.id}/react`, { method: 'POST', token: regC.data.token, body: { emoji: '❤️' } });
+    check('чужой не может реагировать в чате', foreignRx.status === 403);
+
+    console.log('\n— v5: заслуги');
+    const badgesA = await api(`/api/users/${meA.data.user.id}/badges`, { token: tokA });
+    const firstPostBadge = badgesA.data.badges?.find(b => b.key === 'first_post');
+    check('бейдж «Первые слова» получен', firstPostBadge?.unlocked === true);
+    const badgesC = await api(`/api/users/${regC.data.user.id}/badges`, { token: tokA });
+    check('у новичка бейдж не получен', badgesC.data.badges?.find(b => b.key === 'first_post')?.unlocked === false);
+
+    sockB2.disconnect();
+    sockA2.disconnect();
 
     // голосовое: минимальный WAV (44 байта заголовка + данные)
     const wav = Buffer.concat([

@@ -97,6 +97,16 @@ function initials(name) {
   return (name || '?').trim().charAt(0).toUpperCase();
 }
 
+/* Галочка «проверенный» для аккаунтов с подтверждённой почтой */
+function verifiedMark(u) {
+  if (!u?.email_verified) return null;
+  const el = document.createElement('span');
+  el.className = 'verified-mark';
+  el.title = 'Аккаунт с подтверждённой почтой';
+  el.textContent = '✔';
+  return el;
+}
+
 function avatarEl(user, small = false) {
   const el = document.createElement('span');
   el.className = 'avatar' + (small ? ' small' : '');
@@ -179,7 +189,7 @@ document.querySelectorAll('.auth-tabs .tab').forEach((btn) => {
     btn.classList.add('active');
     $('#login-form').classList.toggle('hidden', btn.dataset.tab !== 'login');
     $('#register-form').classList.toggle('hidden', btn.dataset.tab !== 'register');
-    $('#phone-form').classList.toggle('hidden', btn.dataset.tab !== 'phone');
+    $('#email-form').classList.toggle('hidden', btn.dataset.tab !== 'email');
     $('#auth-error').textContent = '';
   });
 });
@@ -220,49 +230,49 @@ $('#register-form').addEventListener('submit', async (e) => {
   }
 });
 
-/* ---------- вход по номеру телефона (6-значный код без внешних API) ---------- */
+/* ---------- вход по электронной почте (6-значный код письмом) ---------- */
 
-const phoneState = { phone: null, timer: null, left: 0 };
+const emailState = { email: null, timer: null, left: 0 };
 
-function phoneShow(step) {
-  $('#phone-step-1').classList.toggle('hidden', step !== 1);
-  $('#phone-step-2').classList.toggle('hidden', step !== 2);
+function emailShow(step) {
+  $('#email-step-1').classList.toggle('hidden', step !== 1);
+  $('#email-step-2').classList.toggle('hidden', step !== 2);
 }
 
-function phoneTickTimer() {
-  if (phoneState.left <= 0) {
-    $('#phone-timer').textContent = '';
-    clearInterval(phoneState.timer);
-    phoneState.timer = null;
+function emailTickTimer() {
+  if (emailState.left <= 0) {
+    $('#email-timer').textContent = '';
+    clearInterval(emailState.timer);
+    emailState.timer = null;
     return;
   }
-  phoneState.left -= 1;
-  $('#phone-timer').textContent = `Код действует ${Math.floor(phoneState.left / 60)}:${String(phoneState.left % 60).padStart(2, '0')}`;
+  emailState.left -= 1;
+  $('#email-timer').textContent = `Код действует ${Math.floor(emailState.left / 60)}:${String(emailState.left % 60).padStart(2, '0')}`;
 }
 
-async function phoneStart() {
-  const phone = $('#phone-number').value.trim();
-  if (!phone) { authFail('Введите номер телефона'); return; }
-  const btn = $('#phone-send-code');
+async function emailStart() {
+  const email = $('#email-address').value.trim();
+  if (!email) { authFail('Введите адрес почты'); return; }
+  const btn = $('#email-send-code');
   btn.disabled = true;
   try {
-    const data = await api('/api/auth/phone/start', { method: 'POST', body: { phone } });
-    phoneState.phone = phone;
-    phoneState.left = data.ttl_sec || 300;
-    phoneShow(2);
-    $('#phone-code').value = '';
-    $('#phone-code').focus();
-    clearInterval(phoneState.timer);
-    phoneTickTimer();
-    phoneState.timer = setInterval(phoneTickTimer, 1000);
+    const data = await api('/api/auth/email/start', { method: 'POST', body: { email } });
+    emailState.email = email;
+    emailState.left = data.ttl_sec || 300;
+    emailShow(2);
+    $('#email-code').value = '';
+    $('#email-code').focus();
+    clearInterval(emailState.timer);
+    emailTickTimer();
+    emailState.timer = setInterval(emailTickTimer, 1000);
     // Подсказка по каналу доставки кода
     if (data.local_code) {
-      // Локальная доставка: в офлайн-приложении SMS-шлюза нет — код сразу в тосте
-      toast(`📡 SMS от BLOOP: код ${data.local_code}`, 15000);
-    } else if (data.delivery === 'sms') {
-      toast(`✉️ SMS с кодом отправлена на ${phoneState.phone}`, 8000);
+      // Локальная доставка: в офлайн-приложении SMTP нет — код сразу в тосте
+      toast(`📡 Почта BLOOP: код ${data.local_code}`, 15000);
+    } else if (data.delivery === 'smtp') {
+      toast(`✉️ Письмо с кодом отправлено на ${email}`, 8000);
     } else {
-      toast('📱 Код отправлен — он виден в консоли сервера (настройте SMS-шлюз, см. README)', 8000);
+      toast('📧 Код отправлен — он виден в консоли сервера (настройте SMTP, см. README)', 8000);
     }
   } catch (err) {
     authFail(err.message);
@@ -271,21 +281,21 @@ async function phoneStart() {
   }
 }
 
-$('#phone-send-code').addEventListener('click', phoneStart);
-$('#phone-resend').addEventListener('click', phoneStart);
+$('#email-send-code').addEventListener('click', emailStart);
+$('#email-resend').addEventListener('click', emailStart);
 
-$('#phone-form').addEventListener('submit', async (e) => {
+$('#email-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const code = $('#phone-code').value.trim();
+  const code = $('#email-code').value.trim();
   if (!/^\d{6}$/.test(code)) { authFail('Код состоит из 6 цифр'); return; }
   try {
-    const data = await api('/api/auth/phone/verify', {
+    const data = await api('/api/auth/email/verify', {
       method: 'POST',
-      body: { phone: phoneState.phone, code, display_name: $('#phone-display').value.trim() },
+      body: { email: emailState.email, code, display_name: $('#email-display').value.trim() },
     });
     localStorage.setItem('bloop_token', data.token);
-    clearInterval(phoneState.timer);
-    toast(data.created ? '🎉 Аккаунт создан по номеру телефона!' : '👋 С возвращением!');
+    clearInterval(emailState.timer);
+    toast(data.created ? '🎉 Аккаунт создан — почта подтверждена!' : '👋 С возвращением!');
     enterApp(data.user);
   } catch (err) {
     authFail(err.message);
@@ -353,7 +363,7 @@ function updateUnreadUi() {
 /* ---------- навигация по страницам ---------- */
 
 const pageEnter = {
-  feed: () => { if (!feedLoaded || feedMode.kind !== 'all') loadFeed({ reset: true }); loadFeedSide(); },
+  feed: () => { if (!feedLoaded || feedMode.kind !== 'all') loadFeed({ reset: true }); loadFeedSide(); loadStories(); },
   clips: () => { if (!clipsLoaded) loadClips(); },
   videos: () => { if (!videosLoaded) loadVideos(); },
   messages: () => refreshChats(),
@@ -522,6 +532,20 @@ function msgEl(m) {
     el.appendChild(sender);
   }
 
+  // цитата — ответ на другое сообщение
+  if (m.reply) {
+    const q = document.createElement('div');
+    q.className = 'reply-quote';
+    const qa = document.createElement('div');
+    qa.className = 'rq-author';
+    qa.textContent = m.reply.mine ? 'Вы' : m.reply.author;
+    const qt = document.createElement('div');
+    qt.className = 'rq-text';
+    qt.textContent = m.reply.image && !m.reply.text ? (m.reply.kind === 'voice' ? '🎤 Голосовое' : '🖼 Изображение') : m.reply.text;
+    q.append(qa, qt);
+    el.appendChild(q);
+  }
+
   if (m.image && m.media_kind === 'voice') {
     el.appendChild(voiceBubble(m));
   } else if (m.image) {
@@ -541,12 +565,105 @@ function msgEl(m) {
     el.appendChild(body);
   }
 
+  // чипсы реакций сообщения
+  if (m.reactions && Object.keys(m.reactions).length) {
+    const chips = document.createElement('div');
+    chips.className = 'msg-rx';
+    for (const [emoji, count] of Object.entries(m.reactions)) {
+      const chip = document.createElement('button');
+      chip.className = 'rx-chip small' + ((m.mine || []).includes(emoji) ? ' mine' : '');
+      chip.textContent = `${emoji} ${count}`;
+      chip.addEventListener('click', () => reactMessageUI(m, emoji));
+      chips.appendChild(chip);
+    }
+    el.appendChild(chips);
+  }
+
   const foot = document.createElement('div');
   foot.className = 'foot';
   foot.textContent = hhmm(m.created_at);
   el.appendChild(foot);
+
+  // удержание (или двойной клик) — меню: ответить / реакция
+  let pressTimer = null;
+  const openMenu = (rect) => openMsgMenu(m, el, rect);
+  const start = (e) => {
+    const t = e.touches?.[0];
+    pressTimer = setTimeout(() => openMenu({ x: t?.clientX, y: t?.clientY, el }), 450);
+  };
+  const cancel = () => clearTimeout(pressTimer);
+  el.addEventListener('touchstart', start, { passive: true });
+  el.addEventListener('touchend', cancel);
+  el.addEventListener('touchmove', cancel, { passive: true });
+  el.addEventListener('dblclick', () => setReply(m));
+
   return el;
 }
+
+/* Меню сообщения: ответить + эмодзи */
+function openMsgMenu(m, el, rect) {
+  if (navigator.vibrate) navigator.vibrate(15);
+  $('#msg-pop')?.remove();
+  const pop = document.createElement('div');
+  pop.id = 'msg-pop';
+  pop.className = 'msg-pop';
+  const replyBtn = document.createElement('button');
+  replyBtn.className = 'ghost-btn';
+  replyBtn.textContent = '↩ Ответить';
+  replyBtn.addEventListener('click', () => { pop.remove(); setReply(m); });
+  const rxRow = document.createElement('div');
+  rxRow.className = 'msg-pop-rx';
+  for (const emoji of ['❤️', '🔥', '😂', '😮', '👍', '😢']) {
+    const b = document.createElement('button');
+    b.textContent = emoji;
+    b.addEventListener('click', () => { pop.remove(); reactMessageUI(m, emoji); });
+    rxRow.appendChild(b);
+  }
+  pop.append(replyBtn, rxRow);
+  document.body.appendChild(pop);
+  const r = rect.el?.getBoundingClientRect() || el.getBoundingClientRect();
+  pop.style.left = `${Math.max(8, Math.min(rect.x ?? r.left, window.innerWidth - 220))}px`;
+  pop.style.top = `${Math.max(8, (rect.y ?? r.top) - 56)}px`;
+  const close = (e) => { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener('pointerdown', close); } };
+  setTimeout(() => document.addEventListener('pointerdown', close), 10);
+}
+
+/* Реакция на сообщении */
+async function reactMessageUI(m, emoji) {
+  try {
+    const r = await api(`/api/chats/${m.chat_id}/messages/${m.id}/react`, { method: 'POST', body: { emoji } });
+    m.reactions = r.reactions;
+    m.mine = r.mine;
+    rerenderMessage(m);
+  } catch (err) { alert(err.message); }
+}
+
+function rerenderMessage(m) {
+  const old = document.querySelector(`.msg[data-id="${m.id}"]`);
+  if (old) old.replaceWith(msgEl(m));
+}
+
+/* ---------- ответы на сообщения ---------- */
+
+let replyToMessage = null;
+
+function setReply(m) {
+  replyToMessage = m;
+  const bar = $('#reply-bar');
+  $('#reply-author').textContent = m.sender_id === me.id ? 'Ответ себе' : m.display_name;
+  $('#reply-text').textContent = m.image && !m.text
+    ? (m.media_kind === 'voice' ? '🎤 Голосовое' : '🖼 Изображение')
+    : m.text;
+  bar.classList.remove('hidden');
+  input.focus();
+}
+
+function clearReply() {
+  replyToMessage = null;
+  $('#reply-bar').classList.add('hidden');
+}
+
+$('#reply-cancel').addEventListener('click', clearReply);
 
 /* Голосовое сообщение: плеер с прогрессом и волной */
 function voiceBubble(m) {
@@ -692,12 +809,14 @@ async function sendMessage() {
   input.style.height = 'auto';
   const image = pendingImage;
   const voice = pendingVoice;
+  const replyTo = replyToMessage?.id || null;
   pendingVoice = null;
   clearPendingImage();
+  clearReply();
   try {
     const { message } = await api(`/api/chats/${currentChatId}/messages`, {
       method: 'POST',
-      body: { text, image, voice: voice?.dataUrl || null },
+      body: { text, image, voice: voice?.dataUrl || null, reply_to: replyTo },
     });
     const list = messagesByChat.get(currentChatId) || [];
     if (!list.some(x => x.id === message.id)) { // событие из сокета могло прийти раньше ответа
@@ -973,15 +1092,40 @@ async function connectSocket() {
     toast(`${post.author.display_name}: ${what}`, () => showPage('feed'));
   });
 
-  socket.on('post:stats', ({ post_id, likes, comments_count }) => {
+  socket.on('post:stats', ({ post_id, likes, comments_count, reactions, liked_by_me }) => {
     for (const list of [feedPosts, profileState.posts, clipsPosts, videosPosts]) {
       const p = list.find(x => x.id === post_id);
       if (!p) continue;
       if (likes !== undefined) p.likes = likes;
       if (comments_count !== undefined) p.comments_count = comments_count;
+      if (reactions !== undefined) p.reactions = reactions;
+      if (liked_by_me !== undefined) p.liked_by_me = liked_by_me;
     }
     updatePostCounters(post_id);
   });
+
+  socket.on('post:poll', ({ post_id, poll }) => {
+    let target = null;
+    for (const list of [feedPosts, profileState.posts]) {
+      const p = list.find(x => x.id === post_id);
+      if (p) { p.poll = poll; target = p; }
+    }
+    if (target) {
+      const card = document.querySelector(`.post-card[data-post-id="${post_id}"]`);
+      card?.querySelector('.poll')?.replaceWith(pollBlock(target));
+    }
+  });
+
+  socket.on('message:react', ({ chat_id, message_id, reactions, mine }) => {
+    const list = messagesByChat.get(chat_id);
+    const m = list?.find(x => x.id === message_id);
+    if (!m) return;
+    m.reactions = reactions;
+    m.mine = mine;
+    rerenderMessage(m);
+  });
+
+  socket.on('stories:update', () => loadStories().catch(() => {}));
 
   socket.on('comment:new', ({ post_id, comment }) => {
     document.querySelectorAll(`.post-card[data-post-id="${post_id}"] .post-comments:not(.hidden)`).forEach(block => {
@@ -1178,19 +1322,24 @@ $('#post-file').addEventListener('change', async () => {
 
 $('#post-submit').addEventListener('click', async () => {
   const text = $('#post-text').value.trim();
-  if (!text && !pendingPostMedia) { alert('Напишите текст или добавьте изображение'); return; }
+  const poll = pollBuilder.enabled
+    ? pollBuilder.options.map(o => o.trim()).filter(Boolean)
+    : null;
+  if (poll !== null && poll.length < 2) { alert('В опросе нужно минимум 2 варианта'); return; }
+  if (!text && !pendingPostMedia && !poll) { alert('Напишите текст или добавьте изображение'); return; }
   const btn = $('#post-submit');
   btn.disabled = true;
   try {
     const { post } = await api('/api/posts', {
       method: 'POST',
-      body: { type: 'post', text, media: pendingPostMedia?.url || null },
+      body: { type: 'post', text, media: pendingPostMedia?.url || null, poll },
     });
     $('#post-text').value = '';
     pendingPostMedia = null;
     $('#post-file').value = '';
     $('#composer-media').classList.add('hidden');
     $('#composer-media').replaceChildren();
+    resetPollBuilder();
     $('#viral-meter').classList.add('hidden');
     // сокет-событие post:new могло прийти раньше ответа — не дублируем
     if (!feedPosts.some(p => p.id === post.id)) feedPosts.unshift(post);
@@ -1321,6 +1470,8 @@ function postCardEl(p) {
   const nameEl = document.createElement('div');
   nameEl.className = 'p-name';
   nameEl.textContent = p.author.display_name;
+  const vm = verifiedMark(p.author);
+  if (vm) nameEl.appendChild(vm);
   const timeEl = document.createElement('div');
   timeEl.className = 'p-time';
   timeEl.textContent = timeAgo(p.created_at);
@@ -1362,6 +1513,10 @@ function postCardEl(p) {
     card.appendChild(text);
   }
 
+  if (p.poll) {
+    card.appendChild(pollBlock(p));
+  }
+
   if (p.media && p.type === 'post') {
     const media = document.createElement('div');
     media.className = 'post-media';
@@ -1389,17 +1544,26 @@ function postCardEl(p) {
   const foot = document.createElement('div');
   foot.className = 'post-foot';
 
+  // ❤️ — основной лайк; удержание открывает палитру реакций-эмодзи
   const like = document.createElement('button');
   like.className = 'pbtn like-btn' + (p.liked_by_me ? ' liked' : '');
   like.innerHTML = `${SVG_HEART}<span class="n">${formatCount(p.likes)}</span>`;
+  let longPressTimer = null;
+  let longPressed = false;
+  const startLong = (e) => {
+    longPressed = false;
+    longPressTimer = setTimeout(() => { longPressed = true; openReactBar(p, like); }, 450);
+  };
+  const cancelLong = () => clearTimeout(longPressTimer);
+  like.addEventListener('mousedown', startLong);
+  like.addEventListener('touchstart', startLong, { passive: true });
+  like.addEventListener('mouseup', cancelLong);
+  like.addEventListener('mouseleave', cancelLong);
+  like.addEventListener('touchend', cancelLong);
+  like.addEventListener('contextmenu', (e) => e.preventDefault());
   like.addEventListener('click', async () => {
-    try {
-      const r = await api(`/api/posts/${p.id}/like`, { method: 'POST' });
-      p.liked_by_me = r.liked;
-      p.likes = r.likes;
-      like.classList.toggle('liked', r.liked);
-      like.querySelector('.n').textContent = formatCount(r.likes);
-    } catch (err) { alert(err.message); }
+    if (longPressed) return; // после удержания не считаем клик
+    await reactPostUI(p, '❤️', card);
   });
   foot.appendChild(like);
 
@@ -1425,8 +1589,135 @@ function postCardEl(p) {
   views.innerHTML = `${SVG_EYE}<span class="n">${formatCount(p.views)}</span>`;
   foot.appendChild(views);
 
-  card.append(foot, cblock);
+  card.append(foot, reactionChips(p), cblock);
   return card;
+}
+
+/* Голосование в опросе поста */
+function pollBlock(p) {
+  const poll = p.poll;
+  const box = document.createElement('div');
+  box.className = 'poll';
+  const options = poll.options;
+  const my = poll.my_vote;
+
+  if (my === null || my === undefined) {
+    // ещё не голосовал: показываем кнопки вариантов
+    options.forEach((opt, idx) => {
+      const b = document.createElement('button');
+      b.className = 'poll-opt';
+      b.textContent = opt;
+      b.addEventListener('click', async () => {
+        try {
+          const { poll: updated } = await api(`/api/posts/${p.id}/poll`, { method: 'POST', body: { option_idx: idx } });
+          p.poll = updated;
+          const fresh = pollBlock(p);
+          box.replaceWith(fresh);
+        } catch (err) { alert(err.message); }
+      });
+      box.appendChild(b);
+    });
+  } else {
+    // голос отдан: показываем результаты
+    options.forEach((opt, idx) => {
+      const count = poll.votes[idx] || 0;
+      const pct = poll.total ? Math.round((count / poll.total) * 100) : 0;
+      const row = document.createElement('div');
+      row.className = 'poll-res' + (idx === my ? ' mine' : '');
+      const bar = document.createElement('div');
+      bar.className = 'poll-bar';
+      const fill = document.createElement('div');
+      fill.className = 'poll-fill';
+      requestAnimationFrame(() => { fill.style.width = pct + '%'; });
+      bar.appendChild(fill);
+      const label = document.createElement('div');
+      label.className = 'poll-label';
+      const txt = document.createElement('span');
+      txt.textContent = opt;
+      const pctEl = document.createElement('b');
+      pctEl.textContent = `${pct}%`;
+      label.append(txt, pctEl);
+      row.append(label, bar);
+      box.appendChild(row);
+    });
+  }
+  const total = document.createElement('div');
+  total.className = 'poll-total';
+  total.textContent = `📊 ${poll.total} ${poll.total === 1 ? 'голос' : 'голосов'}`;
+  box.appendChild(total);
+  return box;
+}
+
+/* Чипсы реакций под постом */
+function reactionChips(p) {
+  const wrap = document.createElement('div');
+  wrap.className = 'rx-chips';
+  const update = () => {
+    wrap.replaceChildren();
+    for (const [emoji, count] of Object.entries(p.reactions || {})) {
+      if (!count) continue;
+      const chip = document.createElement('button');
+      chip.className = 'rx-chip' + ((p.my_reactions || []).includes(emoji) ? ' mine' : '');
+      chip.innerHTML = `<span class="rx-e">${emoji}</span><span class="rx-n">${formatCount(count)}</span>`;
+      chip.addEventListener('click', () => reactPostUI(p, emoji, chip.closest('.post-card')));
+      wrap.appendChild(chip);
+    }
+    wrap.classList.toggle('hidden', !wrap.children.length);
+  };
+  update();
+  p.__renderChips = update;
+  return wrap;
+}
+
+/* Отправка реакции и синхронизация карточки */
+async function reactPostUI(p, emoji, card) {
+  try {
+    const r = await api(`/api/posts/${p.id}/react`, { method: 'POST', body: { emoji } });
+    p.reactions = r.reactions;
+    p.my_reactions = r.mine;
+    p.likes = r.likes;
+    p.liked_by_me = r.liked;
+    syncPostReactionUi(p, card);
+  } catch (err) { alert(err.message); }
+}
+
+function syncPostReactionUi(p, card) {
+  if (!card) card = document.querySelector(`.post-card[data-post-id="${p.id}"]`);
+  if (card) {
+    const likeBtn = card.querySelector('.like-btn');
+    if (likeBtn) {
+      likeBtn.classList.toggle('liked', p.liked_by_me);
+      const n = likeBtn.querySelector('.n');
+      if (n) n.textContent = formatCount(p.likes);
+    }
+    p.__renderChips?.();
+  }
+  // обновляем объект в списках
+  for (const list of [feedPosts, profileState.posts, clipsPosts, videosPosts]) {
+    const q = list.find(x => x.id === p.id);
+    if (q) Object.assign(q, { reactions: p.reactions, my_reactions: p.my_reactions, likes: p.likes, liked_by_me: p.liked_by_me });
+  }
+}
+
+/* Всплывающая палитра реакций (удержание кнопки ♥) */
+function openReactBar(p, anchor) {
+  $('#react-pop')?.remove();
+  const pop = document.createElement('div');
+  pop.id = 'react-pop';
+  pop.className = 'react-pop';
+  for (const emoji of ['❤️', '🔥', '😂', '😮', '😢', '👍', '🤯', '💚']) {
+    const b = document.createElement('button');
+    b.textContent = emoji;
+    b.addEventListener('click', () => { pop.remove(); reactPostUI(p, emoji, null); });
+    pop.appendChild(b);
+  }
+  document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect();
+  const left = Math.min(r.left, window.innerWidth - 250);
+  pop.style.left = `${Math.max(8, left)}px`;
+  pop.style.top = `${Math.max(8, r.top - 48)}px`;
+  const close = (e) => { if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener('pointerdown', close); } };
+  setTimeout(() => document.addEventListener('pointerdown', close), 10);
 }
 
 /* комментарии (в карточках и модалках) */
@@ -1989,6 +2280,8 @@ function renderProfile() {
   const nm = document.createElement('div');
   nm.className = 'pr-name';
   nm.textContent = user.display_name;
+  const vm = verifiedMark(user);
+  if (vm) nm.appendChild(vm);
   const un = document.createElement('div');
   un.className = 'pr-username';
   un.textContent = `@${user.username}`;
@@ -2019,8 +2312,8 @@ function renderProfile() {
 
     const theme = document.createElement('button');
     theme.className = 'ghost-btn';
-    theme.textContent = 'Тема';
-    theme.addEventListener('click', toggleTheme);
+    theme.textContent = '🎨 Оформление';
+    theme.addEventListener('click', openSettings);
     actions.appendChild(theme);
   } else {
     const write = document.createElement('button');
@@ -2077,6 +2370,7 @@ function renderProfile() {
   content.id = 'profile-content';
   box.appendChild(content);
   renderProfileContent();
+  renderBadgesInto(box, user.id); // 🏆 заслуги под контентом
 }
 
 async function switchProfileTab(tab) {
@@ -2399,20 +2693,428 @@ $('#ai-clear').addEventListener('click', () => {
 });
 
 /* =====================================================================
-   Тема оформления
+   Оформление: темы (тёмная / светлая / авто) + акцентный цвет
    ===================================================================== */
 
+// Палитра акцентов: [основной, вторичный] — на стеклянных поверхностях
+const ACCENTS = {
+  azure:   { a: '#7aa2ff', b: '#4c6fff', name: 'Лазурь' },
+  violet:  { a: '#a78bff', b: '#8f6cff', name: 'Ирис' },
+  rose:    { a: '#ff7aa8', b: '#ff5c8a', name: 'Роза' },
+  mint:    { a: '#4fe3a5', b: '#2bb673', name: 'Мята' },
+  tanger:  { a: '#ffb066', b: '#ff8a5c', name: 'Мандарин' },
+  cyan:    { a: '#5ce0e6', b: '#2dd4bf', name: 'Бирюза' },
+};
+
+const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)');
+let themeMediaListener = null;
+
+function currentThemeMode() {
+  return localStorage.getItem('bloop_theme') || 'auto';
+}
+
 function applyTheme() {
-  document.documentElement.classList.toggle('light', localStorage.getItem('bloop_theme') === 'light');
+  const mode = currentThemeMode();
+  const dark = mode === 'dark' || (mode === 'auto' && !(systemDark?.matches === false));
+  document.documentElement.classList.toggle('light', !dark);
+  if (themeMediaListener) systemDark.removeEventListener('change', themeMediaListener);
+  themeMediaListener = null;
+  if (mode === 'auto' && systemDark) {
+    themeMediaListener = () => applyTheme();
+    systemDark.addEventListener('change', themeMediaListener);
+  }
+  renderThemeSeg();
 }
 
-function toggleTheme() {
-  localStorage.setItem('bloop_theme', localStorage.getItem('bloop_theme') === 'light' ? 'dark' : 'light');
-  applyTheme();
+function currentAccent() {
+  return localStorage.getItem('bloop_accent') || 'azure';
 }
 
-$('#btn-theme').addEventListener('click', toggleTheme);
+function applyAccent() {
+  const { a, b } = ACCENTS[currentAccent()] || ACCENTS.azure;
+  document.documentElement.style.setProperty('--accent', a);
+  document.documentElement.style.setProperty('--accent-2', b);
+}
+
+function renderThemeSeg() {
+  document.querySelectorAll('#theme-seg button').forEach(b =>
+    b.classList.toggle('active', b.dataset.theme === currentThemeMode()));
+}
+
+function renderAccentRow() {
+  const row = $('#accent-row');
+  if (!row) return;
+  row.replaceChildren();
+  for (const [key, { a, b: b2, name }] of Object.entries(ACCENTS)) {
+    const sw = document.createElement('button');
+    sw.type = 'button';
+    sw.className = 'accent-swatch' + (key === currentAccent() ? ' active' : '');
+    sw.style.background = `linear-gradient(135deg, ${a}, ${b2})`;
+    sw.title = name;
+    sw.addEventListener('click', () => {
+      localStorage.setItem('bloop_accent', key);
+      applyAccent();
+      renderAccentRow();
+    });
+    row.appendChild(sw);
+  }
+}
+
+function openSettings() {
+  renderThemeSeg();
+  renderAccentRow();
+  $('#settings-modal').classList.remove('hidden');
+}
+
+document.querySelectorAll('#theme-seg button').forEach(b =>
+  b.addEventListener('click', () => {
+    localStorage.setItem('bloop_theme', b.dataset.theme);
+    applyTheme();
+  }));
+$('#btn-settings').addEventListener('click', openSettings);
+$('#settings-close').addEventListener('click', () => $('#settings-modal').classList.add('hidden'));
+$('#settings-modal').addEventListener('click', (e) => {
+  if (e.target === $('#settings-modal')) $('#settings-modal').classList.add('hidden');
+});
+applyAccent();
 applyTheme();
+
+/* =====================================================================
+   Билдер опроса в композере
+   ===================================================================== */
+
+const pollBuilder = { enabled: false, options: ['', ''] };
+
+function renderPollBuilder() {
+  const box = $('#poll-builder');
+  box.classList.toggle('hidden', !pollBuilder.enabled);
+  const opts = $('#poll-options-box');
+  opts.replaceChildren();
+  pollBuilder.options.forEach((val, i) => {
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.placeholder = `Вариант ${i + 1}`;
+    inp.maxLength = 60;
+    inp.value = val;
+    inp.addEventListener('input', () => { pollBuilder.options[i] = inp.value; });
+    opts.appendChild(inp);
+  });
+  $('#poll-add').classList.toggle('hidden', pollBuilder.options.length >= 4);
+}
+
+function resetPollBuilder() {
+  pollBuilder.enabled = false;
+  pollBuilder.options = ['', ''];
+  renderPollBuilder();
+}
+
+$('#btn-poll').addEventListener('click', () => {
+  pollBuilder.enabled = !pollBuilder.enabled;
+  if (pollBuilder.enabled) {
+    pendingPostMedia = null;
+    $('#post-file').value = '';
+    $('#composer-media').classList.add('hidden');
+    $('#composer-media').replaceChildren();
+  }
+  renderPollBuilder();
+});
+
+$('#poll-add').addEventListener('click', () => {
+  if (pollBuilder.options.length < 4) {
+    pollBuilder.options.push('');
+    renderPollBuilder();
+  }
+});
+
+$('#poll-remove').addEventListener('click', resetPollBuilder);
+
+/* =====================================================================
+   ✨ Мгновения — истории на 24 часа
+   ===================================================================== */
+
+let storiesData = []; // [{user, stories:[...]}]
+const STORY_BGS = ['aurora', 'ocean', 'sunset', 'forest', 'candy', 'midnight'];
+const storyViewer = { user: null, idx: 0, timer: null, left: 0 };
+
+async function loadStories() {
+  try {
+    const { users } = await api('/api/stories');
+    storiesData = users;
+    renderStoriesBar();
+  } catch { /* не критично */ }
+}
+
+function renderStoriesBar() {
+  const bar = $('#stories-bar');
+  bar.replaceChildren();
+
+  // своя ячейка-кнопка «+» для создания
+  const mine = storiesData.find(u => u.user.id === me.id);
+  const myCell = document.createElement('button');
+  myCell.className = 'story-cell mine' + (mine ? ' has' : '');
+  const myAv = avatarEl(me, true);
+  myAv.querySelector('.dot').remove();
+  const plus = document.createElement('span');
+  plus.className = 'story-plus';
+  plus.textContent = mine ? '✨' : '+';
+  myCell.append(myAv, plus);
+  const myLabel = document.createElement('span');
+  myLabel.className = 'story-label';
+  myLabel.textContent = mine ? 'Мои' : 'Моё';
+  myCell.appendChild(myLabel);
+  myCell.addEventListener('click', mine
+    ? () => openStoryViewer(mine, 0)
+    : openStoryComposer);
+  bar.appendChild(myCell);
+
+  for (const g of storiesData) {
+    if (g.user.id === me.id) continue;
+    const unseen = g.stories.some(s => !s.viewed_by_me);
+    const cell = document.createElement('button');
+    cell.className = 'story-cell' + (unseen ? ' unseen' : '');
+    const av = avatarEl(g.user, true);
+    av.querySelector('.dot').remove();
+    cell.appendChild(av);
+    const label = document.createElement('span');
+    label.className = 'story-label';
+    label.textContent = g.user.display_name.split(' ')[0];
+    cell.appendChild(label);
+    cell.addEventListener('click', () => openStoryViewer(g, 0));
+    bar.appendChild(cell);
+  }
+  bar.classList.toggle('hidden', storiesData.length === 0 && false); // всегда видна: своя ячейка «+»
+}
+
+/* просмотрщик мгновений */
+function openStoryViewer(group, idx) {
+  storyViewer.group = group;
+  storyViewer.idx = idx;
+  $('#story-modal').classList.remove('hidden');
+  showStory();
+}
+
+function closeStoryViewer() {
+  clearInterval(storyViewer.timer);
+  $('#story-modal').classList.add('hidden');
+  loadStories();
+}
+
+function showStory() {
+  const { group, idx } = storyViewer;
+  const s = group.stories[idx];
+  if (!s) { closeStoryViewer(); return; }
+  const stage = $('#story-stage');
+  stage.querySelectorAll('.story-slide').forEach(x => x.remove());
+  clearInterval(storyViewer.timer);
+
+  // прогресс-полоски
+  const prog = $('#story-progress');
+  prog.replaceChildren();
+  group.stories.forEach((st, i) => {
+    const seg = document.createElement('span');
+    seg.className = 'sp-seg' + (i === idx ? ' active' : i < idx ? ' done' : '');
+    prog.appendChild(seg);
+  });
+
+  const av = avatarEl(group.user, true);
+  av.querySelector('.dot').remove();
+  av.id = 'story-avatar';
+  $('#story-avatar').replaceWith(av);
+  $('#story-name').textContent = group.user.id === me.id ? 'Вы' : group.user.display_name;
+  $('#story-time').textContent = timeAgo(s.created_at);
+
+  const delBtn = $('#story-del');
+  delBtn.classList.toggle('hidden', group.user.id !== me.id);
+  delBtn.onclick = async () => {
+    if (!confirm('Удалить мгновение?')) return;
+    await api(`/api/stories/${s.id}`, { method: 'DELETE' });
+    group.stories.splice(idx, 1);
+    if (!group.stories.length) { closeStoryViewer(); return; }
+    storyViewer.idx = Math.min(storyViewer.idx, group.stories.length - 1);
+    showStory();
+  };
+
+  const slide = document.createElement('div');
+  slide.className = `story-slide stc-bg-${s.bg || 'aurora'}`;
+  if (s.kind === 'image') {
+    const img = document.createElement('img');
+    img.src = s.media;
+    img.alt = '';
+    slide.appendChild(img);
+    if (s.text) {
+      const cap = document.createElement('div');
+      cap.className = 'story-caption';
+      cap.textContent = s.text;
+      slide.appendChild(cap);
+    }
+  } else {
+    const txt = document.createElement('div');
+    txt.className = 'story-text';
+    txt.textContent = s.text;
+    slide.appendChild(txt);
+  }
+  stage.appendChild(slide);
+
+  // просмотры: отмечаем и показываем счётчик только автору
+  api(`/api/stories/${s.id}/view`, { method: 'POST' }).then(({ views }) => {
+    s.views = views;
+    s.viewed_by_me = true;
+    const v = $('#story-views');
+    v.textContent = `👁 ${views}`;
+    v.classList.toggle('hidden', group.user.id !== me.id);
+  }).catch(() => {});
+
+  // автопереход: текст 6 сек, фото 8 сек
+  const dur = s.kind === 'image' ? 8000 : 6000;
+  storyViewer.left = dur;
+  storyViewer.timer = setInterval(() => {
+    storyViewer.left -= 100;
+    if (storyViewer.left <= 0) nextStory();
+  }, 100);
+}
+
+function nextStory() {
+  const { group, idx } = storyViewer;
+  if (idx + 1 < group.stories.length) { storyViewer.idx = idx + 1; showStory(); }
+  else closeStoryViewer();
+}
+
+function prevStory() {
+  const { group, idx } = storyViewer;
+  if (idx > 0) { storyViewer.idx = idx - 1; showStory(); }
+}
+
+$('#story-close').addEventListener('click', closeStoryViewer);
+$('#story-next').addEventListener('click', nextStory);
+$('#story-prev').addEventListener('click', prevStory);
+
+/* композер мгновения */
+const storyCreate = { mode: 'text', bg: 'aurora', file: null };
+
+function openStoryComposer() {
+  storyCreate.mode = 'text';
+  storyCreate.bg = 'aurora';
+  storyCreate.file = null;
+  $('#stc-text').value = '';
+  $('#stc-caption').value = '';
+  $('#stc-file').value = '';
+  $('#stc-file-label').textContent = 'Выберите фото (до 8 МБ)';
+  $('#stc-status').textContent = '';
+  $('#stc-preview').className = 'stc-preview stc-bg-aurora';
+  $('#stc-text-pane').classList.remove('hidden');
+  $('#stc-photo-pane').classList.add('hidden');
+  $('#stc-tab-text').classList.add('active');
+  $('#stc-tab-photo').classList.remove('active');
+  renderBgRow();
+  $('#story-create-modal').classList.remove('hidden');
+}
+
+function renderBgRow() {
+  const row = $('#bg-row');
+  row.replaceChildren();
+  for (const bg of STORY_BGS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `bg-swatch stc-bg-${bg}` + (bg === storyCreate.bg ? ' active' : '');
+    b.title = bg;
+    b.addEventListener('click', () => {
+      storyCreate.bg = bg;
+      $('#stc-preview').className = `stc-preview stc-bg-${bg}`;
+      renderBgRow();
+    });
+    row.appendChild(b);
+  }
+}
+
+$('#stc-tab-text').addEventListener('click', () => {
+  storyCreate.mode = 'text';
+  $('#stc-text-pane').classList.remove('hidden');
+  $('#stc-photo-pane').classList.add('hidden');
+  $('#stc-tab-text').classList.add('active');
+  $('#stc-tab-photo').classList.remove('active');
+});
+
+$('#stc-tab-photo').addEventListener('click', () => {
+  storyCreate.mode = 'image';
+  $('#stc-text-pane').classList.add('hidden');
+  $('#stc-photo-pane').classList.remove('hidden');
+  $('#stc-tab-photo').classList.add('active');
+  $('#stc-tab-text').classList.remove('active');
+});
+
+$('#stc-file').addEventListener('change', () => {
+  const f = $('#stc-file').files[0];
+  if (f) $('#stc-file-label').textContent = `Выбрано: ${f.name}`;
+});
+
+$('#stc-cancel').addEventListener('click', () => $('#story-create-modal').classList.add('hidden'));
+
+$('#stc-publish').addEventListener('click', async () => {
+  const btn = $('#stc-publish');
+  btn.disabled = true;
+  try {
+    if (storyCreate.mode === 'text') {
+      const text = $('#stc-text').value.trim();
+      if (!text) { $('#stc-status').textContent = 'Напишите текст мгновения'; btn.disabled = false; return; }
+      await api('/api/stories', { method: 'POST', body: { kind: 'text', text, bg: storyCreate.bg } });
+    } else {
+      const f = $('#stc-file').files[0];
+      if (!f) { $('#stc-status').textContent = 'Выберите фото'; btn.disabled = false; return; }
+      if (f.size > 8 * 1024 * 1024) { $('#stc-status').textContent = 'Фото больше 8 МБ'; btn.disabled = false; return; }
+      const dataUrl = await new Promise((res) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.readAsDataURL(f);
+      });
+      await api('/api/stories', { method: 'POST', body: { kind: 'image', image: dataUrl, text: $('#stc-caption').value.trim() } });
+    }
+    $('#story-create-modal').classList.add('hidden');
+    toast('✨ Мгновение выложено — исчезнет через 24 часа');
+    loadStories();
+  } catch (err) {
+    $('#stc-status').textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+/* =====================================================================
+   🏆 Заслуги — достижения профиля
+   ===================================================================== */
+
+async function renderBadgesInto(container, userId) {
+  try {
+    const { badges } = await api(`/api/users/${userId}/badges`);
+    if (!badges.length) return;
+    const block = document.createElement('div');
+    block.className = 'side-block badges-block';
+    const h = document.createElement('h4');
+    h.textContent = '🏆 Заслуги';
+    block.appendChild(h);
+    const grid = document.createElement('div');
+    grid.className = 'badges-grid';
+    for (const b of badges) {
+      const cell = document.createElement('div');
+      cell.className = 'badge-cell' + (b.unlocked ? ' unlocked' : '');
+      const icon = document.createElement('div');
+      icon.className = 'bd-icon';
+      icon.textContent = b.icon;
+      const title = document.createElement('div');
+      title.className = 'bd-title';
+      title.textContent = b.title;
+      const desc = document.createElement('div');
+      desc.className = 'bd-desc';
+      desc.textContent = b.desc;
+      const prog = document.createElement('div');
+      prog.className = 'bd-prog';
+      prog.textContent = b.unlocked ? '✅ получено' : `${b.progress[0]}/${b.progress[1]}`;
+      cell.append(icon, title, desc, prog);
+      grid.appendChild(cell);
+    }
+    block.appendChild(grid);
+    container.appendChild(block);
+  } catch { /* бейджи не критичны */ }
+}
 
 /* ---------- старт ---------- */
 

@@ -17,10 +17,12 @@ import {
   listFeedByTag, searchPosts, listTrends, getUserStats,
   addNotification, listNotifications, unreadNotificationsCount, markNotificationsRead,
   extractTags, setPostTags,
-  createUser, findUserByPhone, savePhoneCode, getPhoneCode, bumpPhoneAttempts, deletePhoneCode,
+  createUser, findUserByEmail, saveEmailCode, getEmailCode, bumpEmailAttempts, deleteEmailCode,
+  reactPost, POST_EMOJIS, votePoll, reactMessage,
+  createStory, listStories, getStory, deleteStory, viewStory, getUserBadges,
 } from './src/db.js';
-import { hashPassword, verifyPassword, signToken, verifyToken, hashPhoneCode, verifyPhoneCode } from './src/auth.js';
-import { deliverCode } from './src/sms.js';
+import { hashPassword, verifyPassword, signToken, verifyToken, hashEmailCode, verifyEmailCode } from './src/auth.js';
+import { deliverEmailCode } from './src/email.js';
 import { upload, checkUploadSize, mediaKind, publicUrl, MAX_VIDEO_BYTES } from './src/media.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -49,6 +51,7 @@ function publicUser(u) {
   return u ? {
     id: u.id, username: u.username, display_name: u.display_name,
     avatar: u.avatar ?? null, bio: u.bio ?? '',
+    email_verified: !!u.email_verified,
   } : null;
 }
 
@@ -132,71 +135,68 @@ app.post('/api/login', (req, res) => {
   res.json({ token: signToken(user.id), user: publicUser(user) });
 });
 
-// ---------- вход по номеру телефона (без внешних SMS API) ----------
-// Код генерируется сервером и «доставляется» в лог сервера — внешние
-// сервисы не используются. BLOOP_SMS_DEBUG=1 дополнительно возвращает
-// код в ответе (только для разработки/тестов).
+// ---------- вход по электронной почте (код подтверждения) ----------
+// Код генерируется сервером и доставляется письмом через SMTP
+// (src/email.js, nodemailer). Без SMTP-конфига код печатается в лог.
+// BLOOP_EMAIL_DEBUG=1 дополнительно возвращает код в ответе (для тестов).
 
 const CODE_TTL_MS = 5 * 60 * 1000;      // код живёт 5 минут
 const CODE_MAX_ATTEMPTS = 5;            // попыток на один код
-const phoneLastSend = new Map();        // phone -> ts, антиспам: 1 код в 30 сек
+const emailLastSend = new Map();        // email -> ts, антиспам: 1 код в 30 сек
 
-function normalizePhone(raw) {
-  const s = String(raw || '').replace(/[\s()\u2013\u2014-]/g, '').trim();
-  if (!/^\+?\d{7,15}$/.test(s)) return null;
-  const digits = s.replace(/^\+/, '');
-  return `+${digits}`;
+function normalizeEmail(raw) {
+  const email = String(raw || '').trim().toLowerCase();
+  if (!/^[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{2,}$/.test(email)) return null;
+  return email;
 }
 
-app.post('/api/auth/phone/start', async (req, res) => {
-  const phone = normalizePhone(req.body?.phone);
-  if (!phone) return fail(res, 400, 'Введите номер в формате +79991234567 (7–15 цифр)');
-  const last = phoneLastSend.get(phone) || 0;
+app.post('/api/auth/email/start', async (req, res) => {
+  const email = normalizeEmail(req.body?.email);
+  if (!email) return fail(res, 400, 'Введите корректный адрес почты');
+  const last = emailLastSend.get(email) || 0;
   if (Date.now() - last < 30 * 1000) return fail(res, 429, 'Код уже отправлен — подождите 30 секунд');
-  phoneLastSend.set(phone, Date.now());
+  emailLastSend.set(email, Date.now());
   const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
-  savePhoneCode(phone, hashPhoneCode(phone, code), Date.now() + CODE_TTL_MS);
-  // Доставка НА УКАЗАННЫЙ НОМЕР через слой sms.js: SMS-шлюз (SMS.ru / SMSC.ru
-  // / Twilio / свой webhook) или консоль сервера, если шлюз не настроен.
-  const { channel, bot_username } = await deliverCode(phone, code);
-  const smsDebug = process.env.BLOOP_SMS_DEBUG === '1';
+  saveEmailCode(email, hashEmailCode(email, code), Date.now() + CODE_TTL_MS);
+  const { channel } = await deliverEmailCode(email, code);
+  const debug = process.env.BLOOP_EMAIL_DEBUG === '1';
   res.json({
     ok: true,
     ttl_sec: Math.floor(CODE_TTL_MS / 1000),
-    delivery: channel,
-    bot_username,
-    ...(smsDebug ? { debug_code: code } : {}),
+    delivery: channel, // 'smtp' — письмо реально ушло, 'console' — в логе сервера
+    ...(debug ? { debug_code: code } : {}),
   });
 });
 
-app.post('/api/auth/phone/verify', (req, res) => {
-  const phone = normalizePhone(req.body?.phone);
+app.post('/api/auth/email/verify', (req, res) => {
+  const email = normalizeEmail(req.body?.email);
   const code = String(req.body?.code || '').trim();
-  if (!phone) return fail(res, 400, 'Неверный номер телефона');
-  const rec = getPhoneCode(phone);
+  if (!email) return fail(res, 400, 'Некорректный адрес почты');
+  const rec = getEmailCode(email);
   if (!rec) return fail(res, 400, 'Сначала запросите код');
   if (Date.now() > rec.expires) {
-    deletePhoneCode(phone);
+    deleteEmailCode(email);
     return fail(res, 400, 'Код истёк — запросите новый');
   }
   if (rec.attempts >= CODE_MAX_ATTEMPTS) {
-    deletePhoneCode(phone);
+    deleteEmailCode(email);
     return fail(res, 429, 'Слишком много попыток — запросите новый код');
   }
-  if (!code || !verifyPhoneCode(phone, code, rec.code_hash)) {
-    bumpPhoneAttempts(phone);
+  if (!code || !verifyEmailCode(email, code, rec.code_hash)) {
+    bumpEmailAttempts(email);
     return fail(res, 401, `Неверный код (осталось ${CODE_MAX_ATTEMPTS - rec.attempts - 1} попыток)`);
   }
-  deletePhoneCode(phone);
+  deleteEmailCode(email);
 
-  let user = findUserByPhone(phone);
+  let user = findUserByEmail(email);
   let created = false;
   if (!user) {
-    // Новый аккаунт: логин из хвоста номера, имя можно указать в форме.
-    let username = `user${phone.replace(/\D/g, '').slice(-9)}`;
-    if (getUserWithPassword(username)) username = `${username}${crypto.randomInt(10, 99)}`;
-    const displayName = String(req.body?.display_name || '').trim().slice(0, 40) || `Гость ${phone.slice(-4)}`;
-    user = createUser({ username, displayName, passwordHash: '', phone });
+    // Новый аккаунт: логин из имени почты, почта сразу подтверждена.
+    let username = String(email.split('@')[0]).toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 17);
+    if (username.length < 3) username = `user${crypto.randomInt(10000, 99999)}`;
+    if (getUserWithPassword(username)) username = `${username.slice(0, 18)}${crypto.randomInt(10, 99)}`;
+    const displayName = String(req.body?.display_name || '').trim().slice(0, 40) || `Гость ${crypto.randomInt(100, 999)}`;
+    user = createUser({ username, displayName, passwordHash: '', email });
     created = true;
   }
   res.json({ token: signToken(user.id), user: publicUser(user), created });
@@ -248,13 +248,13 @@ api.get('/chats/:id/messages', (req, res) => {
   if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
   const before = Math.max(0, Number(req.query.before) || 0);
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
-  res.json({ messages: listMessages(chatId, { before, limit }) });
+  res.json({ messages: listMessages(chatId, { before, limit, viewerId: req.user.id }) });
 });
 
 api.post('/chats/:id/messages', (req, res) => {
   const chatId = Number(req.params.id);
   if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
-  const { text, image, voice } = req.body || {};
+  const { text, image, voice, reply_to } = req.body || {};
   let imagePath = null;
   let mediaKind = 'image';
   try {
@@ -269,9 +269,29 @@ api.post('/chats/:id/messages', (req, res) => {
   }
   const body = String(text || '').trim().slice(0, 4000);
   if (!body && !imagePath) return fail(res, 400, 'Пустое сообщение');
-  const message = insertMessage(chatId, req.user.id, body, imagePath, mediaKind);
+  // Ответ на сообщение: проверяем, что оно из этого же чата
+  let replyTo = Number(reply_to) || null;
+  if (replyTo) {
+    const orig = db.prepare('SELECT id FROM messages WHERE id = ? AND chat_id = ?').get(replyTo, chatId);
+    if (!orig) replyTo = null;
+  }
+  const message = insertMessage(chatId, req.user.id, body, imagePath, mediaKind, replyTo);
   io.to(`chat:${chatId}`).emit('message', message);
   res.json({ message });
+});
+
+// Эмодзи-реакция на сообщении чата
+api.post('/chats/:id/messages/:mid/react', (req, res) => {
+  const chatId = Number(req.params.id);
+  if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
+  const mid = Number(req.params.mid);
+  const msg = db.prepare('SELECT id FROM messages WHERE id = ? AND chat_id = ?').get(mid, chatId);
+  if (!msg) return fail(res, 404, 'Сообщение не найдено');
+  const emoji = String(req.body?.emoji || '');
+  if (!['❤️', '🔥', '😂', '😮', '😢', '👍'].includes(emoji)) return fail(res, 400, 'Неизвестная реакция');
+  const out = reactMessage(mid, req.user.id, emoji);
+  io.to(`chat:${chatId}`).emit('message:react', { chat_id: chatId, message_id: mid, ...out });
+  res.json(out);
 });
 
 api.post('/chats/:id/read', (req, res) => {
@@ -308,11 +328,22 @@ const VIDEO_EXT = new Set(['mp4', 'webm', 'mov']);
 const IMAGE_EXT = new Set(['png', 'jpg', 'gif', 'webp']);
 
 api.post('/posts', (req, res) => {
-  const { type, text, media, duration } = req.body || {};
+  const { type, text, media, duration, poll } = req.body || {};
   if (!['post', 'clip', 'video'].includes(type)) return fail(res, 400, 'Неизвестный тип публикации');
   const body = String(text || '').trim().slice(0, 4000);
+  // Опрос: 2–4 непустых варианта, без медиа
+  let pollOptions = null;
+  if (poll !== undefined && poll !== null) {
+    if (!Array.isArray(poll) || poll.length < 2 || poll.length > 4) {
+      return fail(res, 400, 'Опрос: от 2 до 4 вариантов');
+    }
+    const opts = poll.map(o => String(o || '').trim().slice(0, 60)).filter(Boolean);
+    if (opts.length !== poll.length) return fail(res, 400, 'Варианты опроса не могут быть пустыми');
+    pollOptions = opts;
+  }
   let mediaOk = null;
   if (media != null) {
+    if (pollOptions) return fail(res, 400, 'В опросе не может быть медиафайла');
     const match = MEDIA_RE.exec(String(media));
     if (!match) return fail(res, 400, 'Некорректная ссылка на медиафайл');
     const isVideo = VIDEO_EXT.has(match[1]);
@@ -324,8 +355,9 @@ api.post('/posts', (req, res) => {
   }
   if (type === 'clip' || type === 'video') {
     if (!mediaOk) return fail(res, 400, 'Для клипа/видео нужно приложить видеофайл');
+    if (pollOptions) return fail(res, 400, 'Опрос возможен только в обычном посте');
   }
-  if (!body && !mediaOk) return fail(res, 400, 'Пустая публикация');
+  if (!body && !mediaOk && !pollOptions) return fail(res, 400, 'Пустая публикация');
   const dur = Number(duration);
   const id = createPost({
     authorId: req.user.id,
@@ -333,6 +365,7 @@ api.post('/posts', (req, res) => {
     text: body,
     media: mediaOk,
     duration: Number.isFinite(dur) && dur > 0 && dur < 36000 ? dur : null,
+    pollOptions,
   });
   setPostTags(id, extractTags(body));
   const post = getPost(id, req.user.id);
@@ -367,8 +400,9 @@ api.post('/posts/:id/like', (req, res) => {
   const id = Number(req.params.id);
   const post = getPost(id, req.user.id);
   if (!post) return fail(res, 404, 'Публикация не найдена');
-  const r = toggleLike(id, req.user.id);
-  io.emit('post:stats', { post_id: id, likes: r.likes });
+  const r = toggleLike(id, req.user.id); // теперь это реакция ❤️
+  const after = getPost(id, req.user.id);
+  io.emit('post:stats', { post_id: id, likes: r.likes, liked_by_me: r.liked, reactions: after.reactions });
   if (r.liked && post.author.id !== req.user.id) {
     const n = addNotification({ userId: post.author.id, actorId: req.user.id, type: 'like', postId: id });
     if (n) {
@@ -379,6 +413,84 @@ api.post('/posts/:id/like', (req, res) => {
     }
   }
   res.json(r);
+});
+
+// Эмодзи-реакция на посте (❤️🔥😂😮😢👍🤯💚)
+api.post('/posts/:id/react', (req, res) => {
+  const id = Number(req.params.id);
+  const post = getPost(id, req.user.id);
+  if (!post) return fail(res, 404, 'Публикация не найдена');
+  const emoji = String(req.body?.emoji || '');
+  if (!POST_EMOJIS.includes(emoji)) return fail(res, 400, 'Неизвестная реакция');
+  const r = reactPost(id, req.user.id, emoji);
+  io.emit('post:stats', { post_id: id, likes: r.likes, liked_by_me: r.liked, reactions: r.reactions });
+  if (r.liked && emoji === '❤️' && post.author.id !== req.user.id) {
+    const n = addNotification({ userId: post.author.id, actorId: req.user.id, type: 'like', postId: id });
+    if (n) {
+      io.to(`user:${post.author.id}`).emit('notification', {
+        notification: n,
+        unread: unreadNotificationsCount(post.author.id),
+      });
+    }
+  }
+  res.json(r);
+});
+
+// Голосование в опросе поста
+api.post('/posts/:id/poll', (req, res) => {
+  const id = Number(req.params.id);
+  try {
+    const poll = votePoll(id, req.user.id, req.body?.option_idx);
+    io.emit('post:poll', { post_id: id, poll });
+    res.json({ poll });
+  } catch (e) {
+    fail(res, 400, e.message);
+  }
+});
+
+// ---------- истории «Мгновения» (живут 24 часа) ----------
+
+api.post('/stories', (req, res) => {
+  const kind = req.body?.kind === 'image' ? 'image' : 'text';
+  let media = null;
+  try {
+    if (kind === 'image') media = saveImage(req.body?.image); // dataURL ≤ 8 МБ
+  } catch (e) {
+    return fail(res, 400, e.message);
+  }
+  const text = String(req.body?.text || '').trim().slice(0, 500);
+  if (kind === 'image' && !media) return fail(res, 400, 'Приложите фото или используйте текстовое мгновение');
+  if (kind === 'text' && !text) return fail(res, 400, 'Текст мгновения пуст');
+  if (kind === 'text') media = null;
+  const bg = kind === 'text' ? String(req.body?.bg || 'aurora').slice(0, 24) : null;
+  const id = createStory({ userId: req.user.id, kind, media, text: text || null, bg });
+  io.emit('stories:update'); // подписчики перезагрузят ленту мгновений
+  res.json({ ok: true, id });
+});
+
+api.get('/stories', (req, res) => {
+  res.json({ users: listStories(req.user.id) });
+});
+
+api.post('/stories/:id/view', (req, res) => {
+  const story = getStory(Number(req.params.id));
+  if (!story || story.expires_at <= Date.now()) return fail(res, 404, 'Мгновение не найдено или истекло');
+  res.json({ views: viewStory(story.id, req.user.id) });
+});
+
+api.delete('/stories/:id', (req, res) => {
+  const ok = deleteStory(Number(req.params.id), req.user.id);
+  if (!ok) return fail(res, 403, 'Можно удалять только свои мгновения');
+  io.emit('stories:update');
+  res.json({ ok: true });
+});
+
+// ---------- бейджи-достижения ----------
+
+api.get('/users/:id/badges', (req, res) => {
+  const user = getUserById(Number(req.params.id));
+  if (!user) return fail(res, 404, 'Пользователь не найден');
+  res.json({ badges: getUserBadges(user.id) });
 });
 
 api.post('/posts/:id/view', (req, res) => {

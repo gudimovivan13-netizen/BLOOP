@@ -35,14 +35,14 @@ export function verifyPassword(password, stored) {
   return test.length === real.length && crypto.timingSafeEqual(test, real);
 }
 
-// Коды из SMS хэшируем HMAC'ом с тем же секретом (без внешних API —
-// код доставляется в лог сервера, хэш не раскрывает даже утечка БД).
-export function hashPhoneCode(phone, code) {
-  return crypto.createHmac('sha256', SECRET).update(`${phone}:${code}`).digest('base64url');
+// Коды входа (почта) хэшируем HMAC'ом с тем же секретом — утечка БД
+// не раскрывает ни один код.
+export function hashEmailCode(email, code) {
+  return crypto.createHmac('sha256', SECRET).update(`${String(email).toLowerCase()}:${code}`).digest('base64url');
 }
 
-export function verifyPhoneCode(phone, code, storedHash) {
-  const expected = Buffer.from(hashPhoneCode(phone, code));
+export function verifyEmailCode(email, code, storedHash) {
+  const expected = Buffer.from(hashEmailCode(email, code));
   const given = Buffer.from(String(storedHash || ''));
   return expected.length === given.length && crypto.timingSafeEqual(expected, given);
 }

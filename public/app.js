@@ -370,12 +370,12 @@ const pageEnter = {
   profile: () => openProfile(me.id),
 };
 
-function showPage(name) {
+function showPage(name, enter = true) {
   currentPage = name;
   document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + name));
   document.querySelectorAll('.nav-item, .bnav-item').forEach(b => b.classList.toggle('active', b.dataset.page === name));
   pauseAllClips();
-  pageEnter[name]?.();
+  if (enter) pageEnter[name]?.();
 }
 
 document.querySelectorAll('.nav-item, .bnav-item').forEach(btn =>
@@ -1529,7 +1529,7 @@ function postCardEl(p) {
     card.appendChild(media);
   }
 
-  if (p.media && p.type === 'video') {
+  if (p.media && (p.type === 'video' || p.type === 'clip')) {
     const media = document.createElement('div');
     media.className = 'post-media';
     const v = document.createElement('video');
@@ -2248,7 +2248,9 @@ $('#comment-send').addEventListener('click', () => {
    ===================================================================== */
 
 async function openProfile(userId) {
-  showPage('profile');
+  // enter=false: pageEnter.profile сам зовёт openProfile — без этого
+  // openProfile → showPage → openProfile → … бесконечная рекурсия, приложение зависает
+  showPage('profile', false);
   if (profileState.userId !== userId) {
     profileState = { userId, user: null, counts: null, tab: 'post', posts: [] };
   }

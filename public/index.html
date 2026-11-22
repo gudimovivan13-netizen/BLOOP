@@ -64,12 +64,20 @@
           <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm0 2c-4.4 0-8 2.5-8 5.5V21h16v-1.5c0-3-3.6-5.5-8-5.5z"/></svg>
           <span>Профиль</span>
         </button>
+        <button class="nav-item" id="btn-bell">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 2a6 6 0 0 0-6 6v3.6l-1.7 3.2c-.3.7.1 1.2.8 1.2h13.8c.7 0 1.1-.5.8-1.2L18 11.6V8a6 6 0 0 0-6-6zm-2.5 15a2.5 2.5 0 0 0 5 0z"/></svg>
+          <span>Уведомления</span>
+          <span id="nav-notif" class="badge hidden"></span>
+        </button>
       </nav>
       <div class="rail-bottom">
         <div class="side-me">
           <span id="my-avatar" class="avatar"></span>
           <span id="my-name" class="my-name"></span>
         </div>
+        <button id="btn-theme" class="icon-btn" title="Сменить тему">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 18a6 6 0 1 1 0-12c.9 0 1.8.2 2.6.6A7 7 0 1 0 12 18zm6.9-13.3 1.4 1.4-1.4 1.4-1.4-1.4zM3 11h2v2H3zm16 0h2v2h-2zm-8 8h2v2h-2zM4.2 17l1.4-1.4 1.4 1.4-1.4 1.4zm12.8-1.4 1.4 1.4 1.4-1.4-1.4-1.4zM18.3 4.7l-1.4 1.4-1.4-1.4 1.4-1.4z"/></svg>
+        </button>
         <button id="btn-logout" class="icon-btn" title="Выйти">
           <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M16 13v-2H7V8l-5 4 5 4v-3h9zm3-10H11v2h8v14h-8v2h10V3z"/></svg>
         </button>
@@ -80,24 +88,41 @@
 
       <!-- ЛЕНТА -->
       <section class="page active" id="page-feed">
-        <div class="feed-wrap">
-          <div class="composer-card">
-            <span id="composer-avatar" class="avatar"></span>
-            <div class="composer-box">
-              <textarea id="post-text" rows="2" placeholder="Что нового?"></textarea>
-              <div id="composer-media" class="composer-media hidden"></div>
-              <div class="composer-actions">
-                <label class="ghost-btn attach-media">
-                  Изображение
-                  <input id="post-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
-                </label>
-                <button id="post-submit" class="primary">Опубликовать</button>
+        <div class="feed-layout">
+          <div class="feed-wrap">
+            <div class="feed-head hidden" id="feed-head">
+              <h3 id="feed-title"></h3>
+              <button id="feed-clear" class="ghost-btn">← Вернуться в ленту</button>
+            </div>
+            <div class="composer-card" id="composer-card">
+              <span id="composer-avatar" class="avatar"></span>
+              <div class="composer-box">
+                <textarea id="post-text" rows="2" placeholder="Что нового?"></textarea>
+                <div id="composer-media" class="composer-media hidden"></div>
+                <div class="composer-actions">
+                  <label class="ghost-btn attach-media">
+                    Изображение
+                    <input id="post-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+                  </label>
+                  <button id="post-submit" class="primary">Опубликовать</button>
+                </div>
               </div>
             </div>
+            <div id="feed" class="feed"></div>
+            <div id="feed-more" class="more-wrap hidden"><button id="btn-feed-more" class="ghost-btn">Показать ещё</button></div>
+            <div id="feed-empty" class="empty-note hidden">Пока пусто — будь первым, кто напишет пост!</div>
           </div>
-          <div id="feed" class="feed"></div>
-          <div id="feed-more" class="more-wrap hidden"><button id="btn-feed-more" class="ghost-btn">Показать ещё</button></div>
-          <div id="feed-empty" class="empty-note hidden">Пока пусто — будь первым, кто напишет пост!</div>
+          <aside class="feed-side" id="feed-side">
+            <input id="feed-search" type="search" placeholder="Поиск по постам…">
+            <div class="side-block">
+              <h4>Тренды недели</h4>
+              <div id="trends-list" class="trends-list"><div class="side-hint">Пока тихо</div></div>
+            </div>
+            <div class="side-block">
+              <h4>Кто онлайн</h4>
+              <div id="online-list" class="online-list"><div class="side-hint">…</div></div>
+            </div>
+          </aside>
         </div>
       </section>
 
@@ -191,6 +216,10 @@
       <button class="bnav-item" data-page="profile" title="Профиль">
         <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 12a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9zm0 2c-4.4 0-8 2.5-8 5.5V21h16v-1.5c0-3-3.6-5.5-8-5.5z"/></svg>
       </button>
+      <button class="bnav-item" id="btn-bell-m" title="Уведомления">
+        <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2a6 6 0 0 0-6 6v3.6l-1.7 3.2c-.3.7.1 1.2.8 1.2h13.8c.7 0 1.1-.5.8-1.2L18 11.6V8a6 6 0 0 0-6-6zm-2.5 15a2.5 2.5 0 0 0 5 0z"/></svg>
+        <span id="nav-notif-m" class="badge hidden"></span>
+      </button>
     </nav>
   </div>
 
@@ -269,6 +298,39 @@
       </div>
     </div>
   </div>
+
+  <!-- Модальное окно уведомлений -->
+  <div id="notif-modal" class="modal hidden">
+    <div class="comments-card notif-card">
+      <header class="comments-head">
+        <h3>Уведомления</h3>
+        <button id="notif-read-all" class="ghost-btn">Прочитать всё</button>
+        <button id="notif-close" class="icon-btn" title="Закрыть">✕</button>
+      </header>
+      <div id="notif-list" class="comments-list"><div class="empty-note">Загрузка…</div></div>
+    </div>
+  </div>
+
+  <!-- Модальное окно нейропомощника -->
+  <div id="ai-modal" class="modal hidden">
+    <div class="comments-card ai-card">
+      <header class="comments-head">
+        <h3>🤖 Нейро — помощник</h3>
+        <button id="ai-clear" class="ghost-btn" title="Очистить диалог">Очистить</button>
+        <button id="ai-close" class="icon-btn" title="Закрыть">✕</button>
+      </header>
+      <div id="ai-list" class="comments-list ai-list"><div class="empty-note">Загрузка…</div></div>
+      <div id="ai-chips" class="ai-chips"></div>
+      <footer class="comments-input">
+        <input id="ai-input" type="text" placeholder="Спроси Нейро о чём угодно…" maxlength="2000">
+        <button id="ai-send" class="send-btn" title="Отправить">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M2.7 11.2 20.9 3.4c.8-.3 1.6.4 1.3 1.3l-6 18.2c-.3.9-1.5.9-1.9.1l-3.4-7-7.3-3.1c-.9-.4-.9-1.5.1-1.7z"/></svg>
+        </button>
+      </footer>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts"></div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script type="module" src="/app.js"></script>

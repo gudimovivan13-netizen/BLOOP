@@ -275,6 +275,21 @@ export function listUserPosts(authorId, viewerId, { type = null, before = 0, lim
   return postSelect(viewerId, where.join(' '), params, limit).map(toPost);
 }
 
+export function listFeedByTag(viewerId, tag, { before = 0, limit = 20 } = {}) {
+  const where = ['AND EXISTS (SELECT 1 FROM tags tg WHERE tg.post_id = p.id AND tg.tag = ?)'];
+  const params = [String(tag).toLowerCase()];
+  if (before) { where.push('AND p.id < ?'); params.push(before); }
+  return postSelect(viewerId, where.join(' '), params, limit).map(toPost);
+}
+
+export function searchPosts(viewerId, query, { before = 0, limit = 30 } = {}) {
+  const like = `%${String(query).replace(/[\\%_]/g, ch => `\\${ch}`)}%`;
+  const where = ['AND p.text LIKE ? ESCAPE \'\\\''];
+  const params = [like];
+  if (before) { where.push('AND p.id < ?'); params.push(before); }
+  return postSelect(viewerId, where.join(' '), params, limit).map(toPost);
+}
+
 export function deletePost(id, authorId) {
   const info = db.prepare('DELETE FROM posts WHERE id = ? AND author_id = ?').run(id, authorId);
   if (info.changes === 0) return false;
@@ -336,4 +351,109 @@ export function updateProfile(userId, { displayName, bio }) {
 export function setAvatar(userId, url) {
   db.prepare('UPDATE users SET avatar = ? WHERE id = ?').run(url, userId);
   return getUserById(userId);
+}
+
+/* =====================================================================
+   Уведомления и хэштеги (v3)
+   ===================================================================== */
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS notifications (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id),
+  actor_id   INTEGER NOT NULL REFERENCES users(id),
+  type       TEXT NOT NULL CHECK (type IN ('like', 'comment')),
+  post_id    INTEGER NOT NULL REFERENCES posts(id),
+  is_read    INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, id);
+
+CREATE TABLE IF NOT EXISTS tags (
+  post_id INTEGER NOT NULL REFERENCES posts(id),
+  tag     TEXT NOT NULL COLLATE NOCASE,
+  PRIMARY KEY (post_id, tag)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
+`);
+
+export function addNotification({ userId, actorId, type, postId }) {
+  if (userId === actorId) return null; // свои действия не уведомляем
+  const { lastInsertRowid } = db.prepare(
+    'INSERT INTO notifications (user_id, actor_id, type, post_id) VALUES (?, ?, ?, ?)'
+  ).run(userId, actorId, type, postId);
+  return getNotificationById(Number(lastInsertRowid));
+}
+
+export function getNotificationById(id) {
+  return db.prepare(`
+    SELECT n.id, n.user_id, n.actor_id, n.type, n.post_id, n.is_read, n.created_at,
+           a.display_name AS actor_name, a.username AS actor_username, a.avatar AS actor_avatar,
+           p.type AS post_type, p.text AS post_text
+    FROM notifications n
+    JOIN users a ON a.id = n.actor_id
+    JOIN posts p ON p.id = n.post_id
+    WHERE n.id = ?
+  `).get(id) || null;
+}
+
+export function listNotifications(userId, { limit = 50 } = {}) {
+  return db.prepare(`
+    SELECT n.id, n.user_id, n.actor_id, n.type, n.post_id, n.is_read, n.created_at,
+           a.display_name AS actor_name, a.username AS actor_username, a.avatar AS actor_avatar,
+           p.type AS post_type, p.text AS post_text
+    FROM notifications n
+    JOIN users a ON a.id = n.actor_id
+    JOIN posts p ON p.id = n.post_id
+    WHERE n.user_id = ?
+    ORDER BY n.id DESC LIMIT ?
+  `).all(userId, limit);
+}
+
+export function unreadNotificationsCount(userId) {
+  return db.prepare('SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND is_read = 0').get(userId).n;
+}
+
+export function markNotificationsRead(userId, ids = null) {
+  if (ids && Array.isArray(ids) && ids.length > 0) {
+    const stmt = db.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ? AND id = ?');
+    for (const id of ids) stmt.run(userId, Number(id));
+    return;
+  }
+  db.prepare('UPDATE notifications SET is_read = 1 WHERE user_id = ?').run(userId);
+}
+
+const TAG_RE = /#([\p{L}\p{N}_]{2,30})/gu;
+
+export function extractTags(text) {
+  const set = new Set();
+  for (const m of String(text || '').matchAll(TAG_RE)) set.add(m[1].toLowerCase());
+  return [...set].slice(0, 10);
+}
+
+export function setPostTags(postId, tags) {
+  db.prepare('DELETE FROM tags WHERE post_id = ?').run(postId);
+  const ins = db.prepare('INSERT OR IGNORE INTO tags (post_id, tag) VALUES (?, ?)');
+  for (const tag of tags) ins.run(postId, tag);
+}
+
+export function listTrends({ days = 7, limit = 8 } = {}) {
+  return db.prepare(`
+    SELECT t.tag, COUNT(*) AS count
+    FROM tags t JOIN posts p ON p.id = t.post_id
+    WHERE p.created_at >= datetime('now', ?)
+    GROUP BY t.tag
+    ORDER BY count DESC, t.tag ASC
+    LIMIT ?
+  `).all(`-${Number(days)} days`, limit);
+}
+
+export function getUserStats(userId) {
+  return db.prepare(`
+    SELECT
+      (SELECT COALESCE(SUM(views), 0) FROM posts WHERE author_id = ?) AS views,
+      (SELECT COUNT(*) FROM likes l JOIN posts p ON p.id = l.post_id WHERE p.author_id = ?) AS likes_received
+  `).get(userId, userId);
 }

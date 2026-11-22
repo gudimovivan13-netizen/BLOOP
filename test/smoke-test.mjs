@@ -280,6 +280,53 @@ async function main() {
     const feedAfterDel = await api('/api/feed', { token: tokA });
     check('удалённого поста нет в ленте', !feedAfterDel.data.posts.some(p => p.id === post3.data.post.id));
 
+    console.log('\n— v3: realtime, уведомления, тренды, поиск, ассистент');
+    const alice = users.data.users.find(u => u.username === aliceName);
+    const sockB2 = await connectSocket(tokB); // Боб слушает события
+
+    const postNewP = waitForEvent(sockB2, 'post:new');
+    const livePost = await api('/api/posts', { method: 'POST', token: tokA, body: { type: 'post', text: 'Живая лента #realtime' } });
+    const pn = await postNewP;
+    check('post:new приходит другим пользователям', pn.post?.id === livePost.data.post.id);
+
+    const sockA2 = await connectSocket(tokA);
+    const notifP = waitForEvent(sockA2, 'notification');
+    await api(`/api/posts/${livePost.data.post.id}/like`, { method: 'POST', token: tokB });
+    const nf = await notifP;
+    check('уведомление о лайке приходит автору', nf.notification?.type === 'like' && nf.notification?.actor_id === bob.id && nf.unread >= 1);
+
+    const commentNewP = waitForEvent(sockA2, 'comment:new');
+    const statsP = waitForEvent(sockA2, 'post:stats');
+    const liveCm = await api(`/api/posts/${livePost.data.post.id}/comments`, { method: 'POST', token: tokB, body: { text: 'Реалтайм-коммент' } });
+    const cn = await commentNewP;
+    check('comment:new броадкастится всем', cn.post_id === livePost.data.post.id && cn.comment?.id === liveCm.data.comment.id);
+    const st = await statsP;
+    check('post:stats несёт счётчик комментариев', st.post_id === livePost.data.post.id && st.comments_count === 1);
+
+    const notifList = await api('/api/notifications', { token: tokA });
+    check('список уведомлений с непрочитанными', notifList.data.notifications?.some(n => n.id === nf.notification.id && n.is_read === 0));
+    const marked = await api('/api/notifications/read', { method: 'POST', token: tokA, body: {} });
+    check('«прочитать всё» обнуляет счётчик', marked.data.unread === 0);
+
+    const tagFeed = await api('/api/feed?tag=realtime', { token: tokA });
+    check('лента по хэштегу работает', tagFeed.data.posts?.some(p => p.id === livePost.data.post.id));
+    const trends = await api('/api/trends', { token: tokA });
+    check('тренды содержат #realtime', trends.data.trends?.some(t => t.tag === 'realtime' && t.count >= 1));
+
+    const found = await api('/api/search?q=Живая', { token: tokA });
+    check('поиск по постам находит', found.data.posts?.some(p => p.id === livePost.data.post.id));
+
+    const profStats = await api(`/api/users/${alice.id}`, { token: tokB });
+    check('статистика профиля считается', (profStats.data.stats?.likes_received || 0) >= 1);
+
+    const ai = await api('/api/assistant', { method: 'POST', token: tokA, body: { messages: [{ role: 'user', content: 'Привет, что ты умеешь?' }] } });
+    check('ассистент отвечает содержательно', ai.status === 200 && typeof ai.data.reply === 'string' && ai.data.reply.length > 5);
+    const aiBad = await api('/api/assistant', { method: 'POST', token: tokA, body: { messages: [] } });
+    check('ассистент без сообщений отклоняется', aiBad.status === 400);
+
+    sockB2.disconnect();
+    sockA2.disconnect();
+
   } finally {
     server.kill();
     await sleep(200);

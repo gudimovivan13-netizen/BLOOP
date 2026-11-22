@@ -14,6 +14,9 @@ import {
   insertMessage, listMessages, listChatsForUser, markRead,
   createPost, getPost, listFeed, listUserPosts, deletePost,
   toggleLike, incViews, addComment, listComments, updateProfile, setAvatar,
+  listFeedByTag, searchPosts, listTrends, getUserStats,
+  addNotification, listNotifications, unreadNotificationsCount, markNotificationsRead,
+  extractTags, setPostTags,
 } from './src/db.js';
 import { hashPassword, verifyPassword, signToken, verifyToken } from './src/auth.js';
 import { upload, checkUploadSize, mediaKind, publicUrl, MAX_VIDEO_BYTES } from './src/media.js';
@@ -239,18 +242,21 @@ api.post('/posts', (req, res) => {
     media: mediaOk,
     duration: Number.isFinite(dur) && dur > 0 && dur < 36000 ? dur : null,
   });
-  res.json({ post: getPost(id, req.user.id) });
+  setPostTags(id, extractTags(body));
+  const post = getPost(id, req.user.id);
+  io.emit('post:new', { post }); // клиент дедуплицирует по id: свой пост уже в ленте
+  res.json({ post });
 });
 
 api.get('/feed', (req, res) => {
   const type = ['post', 'clip', 'video'].includes(req.query.type) ? req.query.type : null;
-  res.json({
-    posts: listFeed(req.user.id, {
-      type,
-      before: Math.max(0, Number(req.query.before) || 0),
-      limit: Math.min(50, Math.max(1, Number(req.query.limit) || 20)),
-    }),
-  });
+  const tag = String(req.query.tag || '').trim().toLowerCase().slice(0, 30);
+  const opts = {
+    before: Math.max(0, Number(req.query.before) || 0),
+    limit: Math.min(50, Math.max(1, Number(req.query.limit) || 20)),
+  };
+  const posts = tag ? listFeedByTag(req.user.id, tag, opts) : listFeed(req.user.id, { type, ...opts });
+  res.json({ posts });
 });
 
 api.get('/posts/:id', (req, res) => {
@@ -267,8 +273,20 @@ api.delete('/posts/:id', (req, res) => {
 
 api.post('/posts/:id/like', (req, res) => {
   const id = Number(req.params.id);
-  if (!getPost(id, req.user.id)) return fail(res, 404, 'Публикация не найдена');
-  res.json(toggleLike(id, req.user.id));
+  const post = getPost(id, req.user.id);
+  if (!post) return fail(res, 404, 'Публикация не найдена');
+  const r = toggleLike(id, req.user.id);
+  io.emit('post:stats', { post_id: id, likes: r.likes });
+  if (r.liked && post.author.id !== req.user.id) {
+    const n = addNotification({ userId: post.author.id, actorId: req.user.id, type: 'like', postId: id });
+    if (n) {
+      io.to(`user:${post.author.id}`).emit('notification', {
+        notification: n,
+        unread: unreadNotificationsCount(post.author.id),
+      });
+    }
+  }
+  res.json(r);
 });
 
 api.post('/posts/:id/view', (req, res) => {
@@ -281,10 +299,48 @@ api.get('/posts/:id/comments', (req, res) => {
 
 api.post('/posts/:id/comments', (req, res) => {
   const id = Number(req.params.id);
-  if (!getPost(id, req.user.id)) return fail(res, 404, 'Публикация не найдена');
+  const post = getPost(id, req.user.id);
+  if (!post) return fail(res, 404, 'Публикация не найдена');
   const text = String(req.body?.text || '').trim().slice(0, 1000);
   if (!text) return fail(res, 400, 'Пустой комментарий');
-  res.json({ comment: addComment(id, req.user.id, text) });
+  const comment = addComment(id, req.user.id, text);
+  io.emit('comment:new', { post_id: id, comment });
+  const commentsCount = db.prepare('SELECT COUNT(*) AS n FROM comments WHERE post_id = ?').get(id).n;
+  io.emit('post:stats', { post_id: id, comments_count: commentsCount });
+  if (post.author.id !== req.user.id) {
+    const n = addNotification({ userId: post.author.id, actorId: req.user.id, type: 'comment', postId: id });
+    if (n) {
+      io.to(`user:${post.author.id}`).emit('notification', {
+        notification: n,
+        unread: unreadNotificationsCount(post.author.id),
+      });
+    }
+  }
+  res.json({ comment });
+});
+
+// ---------- соцсеть: уведомления, поиск, тренды ----------
+
+api.get('/notifications', (req, res) => {
+  res.json({
+    notifications: listNotifications(req.user.id),
+    unread: unreadNotificationsCount(req.user.id),
+  });
+});
+
+api.post('/notifications/read', (req, res) => {
+  markNotificationsRead(req.user.id, Array.isArray(req.body?.ids) ? req.body.ids : null);
+  res.json({ unread: unreadNotificationsCount(req.user.id) });
+});
+
+api.get('/search', (req, res) => {
+  const q = String(req.query.q || '').trim().slice(0, 100);
+  if (!q) return res.json({ posts: [] });
+  res.json({ posts: searchPosts(req.user.id, q, { limit: 30 }) });
+});
+
+api.get('/trends', (req, res) => {
+  res.json({ trends: listTrends({ days: 7, limit: 8 }) });
 });
 
 // ---------- соцсеть: профили ----------
@@ -298,7 +354,7 @@ api.get('/users/:id', (req, res) => {
       (SELECT COUNT(*) FROM posts WHERE author_id = ? AND type = 'clip') AS clips,
       (SELECT COUNT(*) FROM posts WHERE author_id = ? AND type = 'video') AS videos
   `).get(user.id, user.id, user.id);
-  res.json({ user: publicUser(user), counts });
+  res.json({ user: publicUser(user), counts, stats: getUserStats(user.id) });
 });
 
 api.get('/users/:id/posts', (req, res) => {
@@ -330,6 +386,67 @@ api.post('/me/avatar', upload.single('file'), (req, res) => {
   }
   const user = setAvatar(req.user.id, publicUrl(req.file.filename));
   res.json({ user: publicUser(user) });
+});
+
+// ---------- нейропомощник «Нейро» ----------
+
+const AI_SYSTEM_PROMPT = [
+  'Ты Нейро — дружелюбный и умный встроенный помощник соцсети BLOOP.',
+  'В BLOOP есть лента постов, клипы, раздел видео, профили и личные чаты.',
+  'Отвечай на русском языке, кратко (1–6 предложений), живо и по делу.',
+  'Помогай придумывать идеи постов, подписи к фото и клипам, хэштеги, отвечай на общие вопросы.',
+  'Используй эмодзи умеренно. Не выдумывай функции BLOOP, которых нет.',
+].join(' ');
+
+let _zai = null;
+async function getZai() {
+  if (_zai) return _zai;
+  const mod = await import('z-ai-web-dev-sdk'); // SDK опционален: без него работает fallback
+  _zai = await mod.default.create();
+  return _zai;
+}
+
+function assistantFallback(question) {
+  const q = String(question || '').toLowerCase();
+  if (/привет|здравств|хай|hello/.test(q)) {
+    return 'Привет! 👋 Я Нейро — помощник BLOOP. Могу придумать идею поста, подпись к клипу, подобрать хэштеги или просто поболтать. Спрашивай!';
+  }
+  if (/что (ты )?умеешь|помощь|help|умеешь/.test(q)) {
+    return 'Я умею: придумывать идеи постов и подписи к фото 📝, подбирать хэштеги, отвечать на вопросы и подсказывать идеи для клипов. Просто напиши вопрос!';
+  }
+  if (/пост|идея|подпись|хэштег|хештег|клип/.test(q)) {
+    const ideas = [
+      'Идея поста: расскажи, что тебя сегодня удивило, и задай вопрос читателям — так больше комментариев 😉 #bloop #интересное',
+      'Подпись к клипу: «Поймал момент» — коротко и цепляюще. Или: «Когда день удался 🔥».',
+      'Хэштеги для ленты: #bloop #интересное #клипы #мысли — не больше 5 на пост.',
+    ];
+    return ideas[Math.floor(Math.random() * ideas.length)];
+  }
+  return 'Сейчас нейросеть недоступна в этом окружении, но я всё равно здесь 🙂 Попробуй спросить про идеи постов, подписи или хэштеги — с этим я справлюсь и без сети.';
+}
+
+api.post('/assistant', async (req, res) => {
+  const incoming = Array.isArray(req.body?.messages) ? req.body.messages : [];
+  if (incoming.length === 0) return fail(res, 400, 'Нет сообщений');
+  const history = incoming.slice(-20).map(m => ({
+    role: m?.role === 'assistant' ? 'assistant' : 'user',
+    content: String(m?.content || '').slice(0, 2000),
+  })).filter(m => m.content);
+  if (history.length === 0) return fail(res, 400, 'Нет сообщений');
+  const lastUser = [...history].reverse().find(m => m.role === 'user');
+  try {
+    const zai = await getZai();
+    const completion = await zai.chat.completions.create({
+      messages: [{ role: 'assistant', content: AI_SYSTEM_PROMPT }, ...history],
+      thinking: { type: 'disabled' },
+    });
+    const reply = String(completion.choices[0]?.message?.content || '').trim();
+    if (!reply) throw new Error('пустой ответ модели');
+    res.json({ reply, source: 'ai' });
+  } catch (err) {
+    console.error('assistant fallback:', err.message);
+    res.json({ reply: assistantFallback(lastUser?.content), source: 'fallback' });
+  }
 });
 
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars

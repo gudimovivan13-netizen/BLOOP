@@ -25,6 +25,10 @@ let pendingUploadFile = null;        // выбранный File в модалк�
 let commentsPostId = null;           // открытые комментарии
 let videoModalPost = null;
 const viewedPosts = new Set();       // просмотры за сессию
+let feedMode = { kind: 'all', value: null }; // 'all' | 'tag' | 'search'
+let notifUnread = 0;
+let aiHistory = [];                  // диалог с Нейро
+let aiBusy = false;
 
 /* ---------- API ---------- */
 
@@ -205,6 +209,7 @@ async function enterApp(user) {
   renderMyIdentity();
   await refreshUsers();
   await refreshChats();
+  loadNotifCount();
   connectSocket();
   showPage('feed');
 }
@@ -251,7 +256,7 @@ function updateUnreadUi() {
 /* ---------- навигация по страницам ---------- */
 
 const pageEnter = {
-  feed: () => { if (!feedLoaded) loadFeed(); },
+  feed: () => { if (!feedLoaded || feedMode.kind !== 'all') loadFeed({ reset: true }); loadFeedSide(); },
   clips: () => { if (!clipsLoaded) loadClips(); },
   videos: () => { if (!videosLoaded) loadVideos(); },
   messages: () => refreshChats(),
@@ -267,7 +272,7 @@ function showPage(name) {
 }
 
 document.querySelectorAll('.nav-item, .bnav-item').forEach(btn =>
-  btn.addEventListener('click', () => showPage(btn.dataset.page))
+  btn.addEventListener('click', () => { if (btn.dataset.page) showPage(btn.dataset.page); })
 );
 
 /* ---------- список чатов ---------- */
@@ -729,6 +734,58 @@ function connectSocket() {
   });
 
   socket.on('chat:new', () => refreshChats());
+
+  /* --- realtime соцсети (v3) --- */
+
+  socket.on('post:new', ({ post }) => {
+    if (!post || feedPosts.some(p => p.id === post.id)) return;
+    if (feedLoaded && feedMode.kind === 'all') {
+      feedPosts.unshift(post);
+      renderFeed();
+    }
+    if (clipsLoaded && post.type === 'clip' && !clipsPosts.some(p => p.id === post.id)) {
+      clipsPosts.unshift(post);
+      renderClips();
+    }
+    if (videosLoaded && post.type === 'video' && !videosPosts.some(p => p.id === post.id)) {
+      videosPosts.unshift(post);
+      renderVideos();
+    }
+    const what = post.type === 'clip' ? 'новый клип 🎬' : post.type === 'video' ? 'новое видео 📹' : 'новый пост ✍️';
+    toast(`${post.author.display_name}: ${what}`, () => showPage('feed'));
+  });
+
+  socket.on('post:stats', ({ post_id, likes, comments_count }) => {
+    for (const list of [feedPosts, profileState.posts, clipsPosts, videosPosts]) {
+      const p = list.find(x => x.id === post_id);
+      if (!p) continue;
+      if (likes !== undefined) p.likes = likes;
+      if (comments_count !== undefined) p.comments_count = comments_count;
+    }
+    updatePostCounters(post_id);
+  });
+
+  socket.on('comment:new', ({ post_id, comment }) => {
+    document.querySelectorAll(`.post-card[data-post-id="${post_id}"] .post-comments:not(.hidden)`).forEach(block => {
+      if (block.querySelector(`.comment-row[data-comment-id="${comment.id}"]`)) return;
+      block.querySelector('.comment-input-row')?.before(commentRow(comment));
+    });
+    if (Number($('#comments-count').dataset.postId) === post_id && !$('#comments-modal').classList.contains('hidden')) {
+      const list = $('#comments-list');
+      if (!list.querySelector(`.comment-row[data-comment-id="${comment.id}"]`)) {
+        list.querySelector('.empty-note')?.remove();
+        list.appendChild(commentRow(comment));
+      }
+    }
+  });
+
+  socket.on('notification', ({ notification, unread }) => {
+    setNotifBadge(unread);
+    const text = notification.type === 'like'
+      ? `❤️ ${notification.actor_name} лайкнул(а) вашу публикацию`
+      : `💬 ${notification.actor_name} прокомментировал(а)`;
+    toast(text, () => openNotifications());
+  });
 }
 
 function updateTypingBar() {
@@ -746,11 +803,21 @@ function updateTypingBar() {
 
 async function loadFeed({ reset = false } = {}) {
   const before = reset ? 0 : feedPosts.at(-1)?.id || 0;
-  const { posts } = await api(`/api/feed?limit=20${before ? `&before=${before}` : ''}`);
+  let url;
+  if (feedMode.kind === 'tag') {
+    url = `/api/feed?tag=${encodeURIComponent(feedMode.value)}&limit=20${before ? `&before=${before}` : ''}`;
+  } else if (feedMode.kind === 'search') {
+    url = `/api/search?q=${encodeURIComponent(feedMode.value)}&limit=30`;
+  } else {
+    url = `/api/feed?limit=20${before ? `&before=${before}` : ''}`;
+  }
+  const { posts } = await api(url);
   if (reset) feedPosts = [];
-  feedPosts.push(...posts);
+  for (const p of posts) { // страховка от дублей при гонке сокета и REST-ответа
+    if (!feedPosts.some(x => x.id === p.id)) feedPosts.push(p);
+  }
   feedLoaded = true;
-  feedExhausted = posts.length < 20;
+  feedExhausted = posts.length < 20 && feedMode.kind !== 'search';
   renderFeed();
 }
 
@@ -760,8 +827,99 @@ function renderFeed() {
   for (const p of feedPosts) box.appendChild(postCardEl(p));
   $('#feed-more').classList.toggle('hidden', feedExhausted || feedPosts.length === 0);
   $('#feed-empty').classList.toggle('hidden', feedPosts.length !== 0);
+  $('#feed-empty').textContent = feedMode.kind === 'tag'
+    ? 'Постов с этим хэштегом пока нет'
+    : feedMode.kind === 'search' ? 'Ничего не найдено' : 'Пока пусто — будь первым, кто напишет пост!';
+  const special = feedMode.kind !== 'all';
+  $('#feed-head').classList.toggle('hidden', !special);
+  $('#composer-card').classList.toggle('hidden', special);
+  if (special) {
+    $('#feed-title').textContent = feedMode.kind === 'tag' ? `#${feedMode.value}` : `Поиск: «${feedMode.value}»`;
+  }
   observePostViews(box);
 }
+
+function clearFeedMode() {
+  feedMode = { kind: 'all', value: null };
+  $('#feed-search').value = '';
+  loadFeed({ reset: true });
+}
+
+/* боковая панель ленты: тренды, кто онлайн */
+let feedSideLoaded = false;
+
+async function loadFeedSide() {
+  try {
+    const [{ trends }, { users }] = await Promise.all([api('/api/trends'), api('/api/users')]);
+    for (const u of users) {
+      const cached = usersCache.get(u.id);
+      if (cached) cached.online = u.online;
+    }
+    renderTrends(trends);
+    renderOnline(users.filter(u => u.online && u.id !== me.id));
+    feedSideLoaded = true;
+  } catch { /* панель не критична */ }
+}
+
+function renderTrends(trends) {
+  const box = $('#trends-list');
+  box.replaceChildren();
+  if (!trends.length) {
+    const hint = document.createElement('div');
+    hint.className = 'side-hint';
+    hint.textContent = 'Добавь #хэштег в пост — и он появится здесь';
+    box.appendChild(hint);
+    return;
+  }
+  for (const t of trends) {
+    const row = document.createElement('div');
+    row.className = 'trend-row';
+    const tag = document.createElement('span');
+    tag.className = 'trend-tag';
+    tag.textContent = '#' + t.tag;
+    const cnt = document.createElement('span');
+    cnt.className = 'trend-cnt';
+    cnt.textContent = formatCount(t.count);
+    row.append(tag, cnt);
+    row.addEventListener('click', () => {
+      feedMode = { kind: 'tag', value: t.tag };
+      loadFeed({ reset: true });
+    });
+    box.appendChild(row);
+  }
+}
+
+function renderOnline(users) {
+  const box = $('#online-list');
+  box.replaceChildren();
+  if (!users.length) {
+    const hint = document.createElement('div');
+    hint.className = 'side-hint';
+    hint.textContent = 'Сейчас все офлайн';
+    box.appendChild(hint);
+    return;
+  }
+  for (const u of users) {
+    const row = document.createElement('div');
+    row.className = 'online-row';
+    const av = avatarEl(u, true);
+    const nm = document.createElement('span');
+    nm.textContent = u.display_name;
+    row.append(av, nm);
+    row.addEventListener('click', () => openProfile(u.id));
+    box.appendChild(row);
+  }
+}
+
+$('#feed-search').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const q = $('#feed-search').value.trim();
+  if (!q) return;
+  feedMode = { kind: 'search', value: q };
+  loadFeed({ reset: true });
+});
+
+$('#feed-clear').addEventListener('click', clearFeedMode);
 
 /* композер поста */
 let pendingPostMedia = null; // {url, kind}
@@ -813,8 +971,10 @@ $('#post-submit').addEventListener('click', async () => {
     $('#post-file').value = '';
     $('#composer-media').classList.add('hidden');
     $('#composer-media').replaceChildren();
-    feedPosts.unshift(post);
+    // сокет-событие post:new могло прийти раньше ответа — не дублируем
+    if (!feedPosts.some(p => p.id === post.id)) feedPosts.unshift(post);
     renderFeed();
+    loadFeedSide(); // тренды могли пополниться новым хэштегом
   } catch (err) {
     alert(err.message);
   } finally {
@@ -1010,6 +1170,7 @@ async function renderCommentsInto(container, postId, postRef) {
 function commentRow(c) {
   const row = document.createElement('div');
   row.className = 'comment-row';
+  row.dataset.commentId = c.id;
   const av = avatarEl(c, true);
   av.querySelector('.dot').remove();
   const body = document.createElement('div');
@@ -1392,9 +1553,10 @@ async function openProfile(userId) {
     profileState = { userId, user: null, counts: null, tab: 'post', posts: [] };
   }
   try {
-    const { user, counts } = await api(`/api/users/${userId}`);
+    const { user, counts, stats } = await api(`/api/users/${userId}`);
     profileState.user = user;
     profileState.counts = counts;
+    profileState.stats = stats || { views: 0, likes_received: 0 };
     usersCache.set(user.id, { ...usersCache.get(user.id), ...user });
     renderProfile();
     await switchProfileTab(profileState.tab); // подгружаем контент вкладки сразу
@@ -1433,11 +1595,24 @@ function renderProfile() {
   const actions = document.createElement('div');
   actions.className = 'profile-actions';
   if (user.id === me.id) {
+    const ai = document.createElement('button');
+    ai.className = 'ai-open-btn';
+    ai.textContent = '🤖 Нейропомощник';
+    ai.title = 'Задать вопрос умному помощнику';
+    ai.addEventListener('click', openAiModal);
+    actions.appendChild(ai);
+
     const edit = document.createElement('button');
     edit.className = 'primary';
     edit.textContent = 'Редактировать';
     edit.addEventListener('click', openEditModal);
     actions.appendChild(edit);
+
+    const theme = document.createElement('button');
+    theme.className = 'ghost-btn';
+    theme.textContent = 'Тема';
+    theme.addEventListener('click', toggleTheme);
+    actions.appendChild(theme);
   } else {
     const write = document.createElement('button');
     write.className = 'primary';
@@ -1461,6 +1636,19 @@ function renderProfile() {
     t.textContent = label;
     c.append(n, t);
     c.addEventListener('click', () => switchProfileTab(key));
+    countsRow.appendChild(c);
+  }
+  // статистика (лайки и просмотры всех публикаций)
+  for (const [key, label] of [['likes_received', 'лайков'], ['views', 'просмотров']]) {
+    const c = document.createElement('div');
+    c.className = 'pcount static';
+    const n = document.createElement('div');
+    n.className = 'n';
+    n.textContent = formatCount(profileState.stats?.[key] || 0);
+    const t = document.createElement('div');
+    t.className = 't';
+    t.textContent = label;
+    c.append(n, t);
     countsRow.appendChild(c);
   }
   box.appendChild(countsRow);
@@ -1574,6 +1762,254 @@ $('#edit-save').addEventListener('click', async () => {
     alert(err.message);
   }
 });
+
+/* =====================================================================
+   Уведомления
+   ===================================================================== */
+
+function setNotifBadge(n) {
+  notifUnread = n;
+  for (const id of ['#nav-notif', '#nav-notif-m']) {
+    const b = $(id);
+    if (!b) continue;
+    b.classList.toggle('hidden', !n);
+    b.textContent = n > 99 ? '99+' : (n || '');
+  }
+}
+
+async function loadNotifCount() {
+  try {
+    setNotifBadge((await api('/api/notifications')).unread);
+  } catch { /* не критично */ }
+}
+
+function toast(text, onClick) {
+  const box = $('#toasts');
+  if (!box) return;
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = text;
+  el.addEventListener('click', () => { el.remove(); onClick?.(); });
+  box.appendChild(el);
+  setTimeout(() => el.remove(), 6000);
+}
+
+function notifRow(n) {
+  const row = document.createElement('div');
+  row.className = 'notif-row' + (n.is_read ? '' : ' unread');
+  const av = avatarEl({ id: n.actor_id, display_name: n.actor_name, avatar: n.actor_avatar }, true);
+  av.querySelector('.dot').remove();
+  const body = document.createElement('div');
+  body.className = 'comment-body';
+  const line = document.createElement('div');
+  const strong = document.createElement('b');
+  strong.textContent = n.actor_name;
+  const what = n.type === 'like'
+    ? ` лайкнул(а) вашу ${n.post_type === 'clip' ? 'клип' : n.post_type === 'video' ? 'видео' : 'запись'}`
+    : ` прокомментировал(а): «${(n.post_text || '').slice(0, 60)}»`;
+  line.append(strong, document.createTextNode(what));
+  const time = document.createElement('span');
+  time.className = 'c-time';
+  time.textContent = timeAgo(n.created_at);
+  body.append(line, time);
+  row.append(av, body);
+  row.addEventListener('click', () => {
+    $('#notif-modal').classList.add('hidden');
+    openProfile(n.actor_id);
+  });
+  return row;
+}
+
+async function openNotifications() {
+  $('#notif-modal').classList.remove('hidden');
+  const box = $('#notif-list');
+  const loading = document.createElement('div');
+  loading.className = 'empty-note';
+  loading.textContent = 'Загрузка…';
+  box.replaceChildren(loading);
+  try {
+    const { notifications, unread } = await api('/api/notifications');
+    setNotifBadge(unread);
+    box.replaceChildren();
+    if (notifications.length === 0) {
+      const none = document.createElement('div');
+      none.className = 'empty-note';
+      none.textContent = 'Пока нет уведомлений';
+      box.appendChild(none);
+    }
+    for (const n of notifications) box.appendChild(notifRow(n));
+  } catch (err) {
+    const errEl = document.createElement('div');
+    errEl.className = 'empty-note';
+    errEl.textContent = err.message;
+    box.replaceChildren(errEl);
+  }
+}
+
+$('#btn-bell').addEventListener('click', openNotifications);
+$('#btn-bell-m').addEventListener('click', openNotifications);
+$('#notif-close').addEventListener('click', () => $('#notif-modal').classList.add('hidden'));
+$('#notif-modal').addEventListener('click', (e) => {
+  if (e.target === $('#notif-modal')) $('#notif-modal').classList.add('hidden');
+});
+
+$('#notif-read-all').addEventListener('click', async () => {
+  try {
+    setNotifBadge((await api('/api/notifications/read', { method: 'POST', body: {} })).unread);
+    openNotifications();
+  } catch { /* ignore */ }
+});
+
+/* живые счётчики публикаций (post:stats) */
+function updatePostCounters(postId) {
+  const p = [...feedPosts, ...profileState.posts, ...clipsPosts, ...videosPosts].find(x => x.id === postId);
+  if (!p) return;
+
+  const card = document.querySelector(`.post-card[data-post-id="${postId}"]`);
+  if (card) {
+    const likeN = card.querySelector('.like-btn .n');
+    if (likeN) likeN.textContent = formatCount(p.likes);
+    const cN = card.querySelector('.comments-btn .n');
+    if (cN) cN.textContent = formatCount(p.comments_count);
+  }
+
+  const slide = document.querySelector(`.clip-slide[data-post-id="${postId}"]`);
+  if (slide) {
+    const likeBtn = [...slide.querySelectorAll('.clip-action')].find(b => b.title === 'Нравится');
+    if (likeBtn) likeBtn.classList.toggle('liked', p.liked_by_me);
+    const counts = slide.querySelectorAll('.clip-count');
+    if (counts.length >= 2) {
+      counts[0].textContent = formatCount(p.likes);
+      counts[1].textContent = formatCount(p.comments_count);
+    }
+  }
+
+  if (videoModalPost?.id === postId && !$('#video-modal').classList.contains('hidden')) {
+    const ns = document.querySelectorAll('#video-info .vi-row .pbtn .n');
+    if (ns[0]) ns[0].textContent = formatCount(p.likes);
+    if (ns[1]) ns[1].textContent = formatCount(p.comments_count);
+  }
+}
+
+/* =====================================================================
+   Нейропомощник «Нейро»
+   ===================================================================== */
+
+const AI_SUGGESTIONS = ['Что ты умеешь?', 'Идея для поста', 'Подпись к фото с дня рождения', 'Хэштеги для клипа'];
+try { aiHistory = JSON.parse(localStorage.getItem('bloop_ai_chat') || '[]'); } catch { aiHistory = []; }
+if (!Array.isArray(aiHistory)) aiHistory = [];
+
+function aiBubble(role, text) {
+  const row = document.createElement('div');
+  row.className = 'ai-msg ' + (role === 'user' ? 'mine' : 'ai');
+  if (role === 'user') {
+    const av = avatarEl(me, true);
+    av.querySelector('.dot').remove();
+    row.appendChild(av);
+  } else {
+    const av = document.createElement('span');
+    av.className = 'avatar small ai-avatar';
+    av.textContent = '🤖';
+    row.appendChild(av);
+  }
+  const bubble = document.createElement('div');
+  bubble.className = 'ai-bubble';
+  bubble.textContent = text;
+  row.appendChild(bubble);
+  return row;
+}
+
+function renderAiList() {
+  const list = $('#ai-list');
+  list.replaceChildren();
+  if (aiHistory.length === 0) {
+    list.appendChild(aiBubble('assistant',
+      'Привет! Я Нейро — умный помощник BLOOP 🤖\nСпроси что угодно: придумать пост, подпись к клипу, подобрать хэштеги или просто поболтать.'));
+    return;
+  }
+  for (const m of aiHistory) list.appendChild(aiBubble(m.role, m.content));
+  list.scrollTop = list.scrollHeight;
+}
+
+function renderAiChips() {
+  const box = $('#ai-chips');
+  box.replaceChildren();
+  for (const s of AI_SUGGESTIONS) {
+    const chip = document.createElement('button');
+    chip.className = 'ai-chip';
+    chip.textContent = s;
+    chip.addEventListener('click', () => {
+      $('#ai-input').value = s;
+      sendAiMessage();
+    });
+    box.appendChild(chip);
+  }
+}
+
+function openAiModal() {
+  $('#ai-modal').classList.remove('hidden');
+  renderAiChips();
+  renderAiList();
+  $('#ai-input').focus();
+}
+
+async function sendAiMessage() {
+  const text = $('#ai-input').value.trim();
+  if (!text || aiBusy) return;
+  $('#ai-input').value = '';
+  aiHistory.push({ role: 'user', content: text });
+  const list = $('#ai-list');
+  list.appendChild(aiBubble('user', text));
+
+  aiBusy = true;
+  const typing = aiBubble('assistant', '…думаю');
+  typing.classList.add('ai-typing');
+  list.appendChild(typing);
+  list.scrollTop = list.scrollHeight;
+
+  try {
+    const { reply } = await api('/api/assistant', { method: 'POST', body: { messages: aiHistory.slice(-20) } });
+    typing.remove();
+    aiHistory.push({ role: 'assistant', content: reply });
+    list.appendChild(aiBubble('assistant', reply));
+    list.scrollTop = list.scrollHeight;
+  } catch (err) {
+    typing.remove();
+    list.appendChild(aiBubble('assistant', 'Ой, не получилось ответить: ' + err.message));
+  } finally {
+    aiBusy = false;
+    try { localStorage.setItem('bloop_ai_chat', JSON.stringify(aiHistory.slice(-40))); } catch { /* ignore */ }
+  }
+}
+
+$('#ai-send').addEventListener('click', sendAiMessage);
+$('#ai-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendAiMessage(); });
+$('#ai-close').addEventListener('click', () => $('#ai-modal').classList.add('hidden'));
+$('#ai-modal').addEventListener('click', (e) => {
+  if (e.target === $('#ai-modal')) $('#ai-modal').classList.add('hidden');
+});
+
+$('#ai-clear').addEventListener('click', () => {
+  aiHistory = [];
+  try { localStorage.removeItem('bloop_ai_chat'); } catch { /* ignore */ }
+  renderAiList();
+});
+
+/* =====================================================================
+   Тема оформления
+   ===================================================================== */
+
+function applyTheme() {
+  document.documentElement.classList.toggle('light', localStorage.getItem('bloop_theme') === 'light');
+}
+
+function toggleTheme() {
+  localStorage.setItem('bloop_theme', localStorage.getItem('bloop_theme') === 'light' ? 'dark' : 'light');
+  applyTheme();
+}
+
+$('#btn-theme').addEventListener('click', toggleTheme);
+applyTheme();
 
 /* ---------- старт ---------- */
 

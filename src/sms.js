@@ -1,129 +1,118 @@
-// Доставка SMS-кодов входа BLOOP — без платных SMS-шлюзов.
+// Доставка SMS-кода входа BLOOP НА УКАЗАННЫЙ НОМЕР через SMS-шлюз.
 //
-// Настоящую SMS оператору отправить «из воздуха» нельзя: в любой стране
-// это платный сервис. Поэтому слой доставки переключается переменными
-// окружения и поддерживает бесплатные каналы:
+// Настоящая SMS «из воздуха» не отправляется: оператор не принимает
+// сообщения из интернета без посредника-шлюза. Этот слой подключает
+// реальных провайдеров — код уходит обычной SMS на номер, который ввёл
+// пользователь. Провайдер выбирается переменной BLOOP_SMS_PROVIDER или
+// определяется автоматически по заполненным переменным окружения:
 //
-//   console   — код в консоль сервера (по умолчанию, работает сразу)
-//   telegram  — код реально приходит НА ТЕЛЕФОН через вашего Telegram-бота:
-//               BLOOP_SMS_MODE=telegram BLOOP_TELEGRAM_BOT_TOKEN=...
-//               Пользователь один раз пишет боту свой номер — дальше все
-//               коды входа приходят в Telegram (телефон всегда с собой).
-//   webhook   — если позже появится любой SMS-провайдер: BLOOP_SMS_WEBHOOK_URL
-//               (POST JSON { phone, code } — можно связать с любым шлюзом)
+//   BLOOP_SMS_PROVIDER=smsru    SMS.ru    BLOOP_SMSRU_API_ID
+//   BLOOP_SMS_PROVIDER=smsc     SMSC.ru   BLOOP_SMSC_LOGIN, BLOOP_SMSC_PSW
+//   BLOOP_SMS_PROVIDER=twilio   Twilio    BLOOP_TWILIO_ACCOUNT_SID, BLOOP_TWILIO_AUTH_TOKEN, BLOOP_TWILIO_FROM
+//   BLOOP_SMS_PROVIDER=webhook  свой шлюз BLOOP_SMS_WEBHOOK_URL (POST {phone, code, text})
 //
-// Никаких внешних зависимостей: только встроенный fetch (Node 18+).
-import { saveTelegramLink, getTelegramLink } from './db.js';
+// Если ни один провайдер не настроен — код печатается в консоль сервера:
+// регистрация работает на этапе разработки; BLOOP_SMS_DEBUG=1 дополнительно
+// вернёт код в API-ответе.
+//
+// Никаких внешних пакетов: только встроенный fetch (Node 18+).
 
-const MODE = (process.env.BLOOP_SMS_MODE || 'console').trim().toLowerCase();
-const BOT_TOKEN = process.env.BLOOP_TELEGRAM_BOT_TOKEN || '';
-const WEBHOOK_URL = process.env.BLOOP_SMS_WEBHOOK_URL || '';
+const SMS_TEXT = (code) => `BLOOP: код ${code}. Никому не говорите. Действует 5 минут.`;
 
-let botUsername = null; // заполняется из getMe при старте Telegram-режима
+const PROVIDERS = {
+  smsru: {
+    env: ['BLOOP_SMSRU_API_ID'],
+    async send(api, phone, code) {
+      const p = new URLSearchParams({ api_id: api.BLOOP_SMSRU_API_ID, to: phone, msg: SMS_TEXT(code), json: 1 });
+      const r = await fetch(`https://sms.ru/sms/send?${p}`);
+      const j = await r.json();
+      const ok = j.status_code === 100 && j.sms?.[phone]?.status_code === 100;
+      if (!ok) throw new Error(`SMS.ru: ${j.status_code} ${j.status_text || ''}`);
+    },
+  },
 
-function tgApi(method, params) {
-  return fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  }).then(r => r.json());
+  smsc: {
+    env: ['BLOOP_SMSC_LOGIN', 'BLOOP_SMSC_PSW'],
+    async send(api, phone, code) {
+      const p = new URLSearchParams({
+        login: api.BLOOP_SMSC_LOGIN,
+        psw: api.BLOOP_SMSC_PSW,
+        phones: phone,
+        mes: SMS_TEXT(code),
+        fmt: 3, // JSON-ответ
+      });
+      if (api.BLOOP_SMSC_SENDER) p.set('sender', api.BLOOP_SMSC_SENDER);
+      const r = await fetch('https://smsc.ru/sys/send.php', { method: 'POST', body: p });
+      const j = await r.json();
+      if (j.error) throw new Error(`SMSC: ${j.error} (код ${j.error_code})`);
+    },
+  },
+
+  twilio: {
+    env: ['BLOOP_TWILIO_ACCOUNT_SID', 'BLOOP_TWILIO_AUTH_TOKEN', 'BLOOP_TWILIO_FROM'],
+    async send(api, phone, code) {
+      const auth = Buffer.from(`${api.BLOOP_TWILIO_ACCOUNT_SID}:${api.BLOOP_TWILIO_AUTH_TOKEN}`).toString('base64');
+      const body = new URLSearchParams({ To: phone, From: api.BLOOP_TWILIO_FROM, Body: SMS_TEXT(code) });
+      const r = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${api.BLOOP_TWILIO_ACCOUNT_SID}/Messages.json`, {
+        method: 'POST',
+        headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      });
+      const j = await r.json();
+      if (!r.ok || !j.sid) throw new Error(`Twilio: HTTP ${r.status} ${j.message || ''}`);
+    },
+  },
+
+  webhook: {
+    env: ['BLOOP_SMS_WEBHOOK_URL'],
+    async send(api, phone, code) {
+      const r = await fetch(api.BLOOP_SMS_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone, code, text: SMS_TEXT(code) }),
+      });
+      if (!r.ok) throw new Error(`webhook вернул HTTP ${r.status}`);
+    },
+  },
+};
+
+/** Имя активного провайдера: BLOOP_SMS_PROVIDER либо первый настроенный. */
+export function activeProvider() {
+  const forced = (process.env.BLOOP_SMS_PROVIDER || '').trim().toLowerCase();
+  if (forced) return forced; // задан явно, даже если не настроен — deliverCode честно сообщит об ошибке
+  for (const [name, def] of Object.entries(PROVIDERS)) {
+    if (def.env.every(k => process.env[k])) return name;
+  }
+  return 'console';
 }
 
 /**
- * Отправляет код выбранным каналом.
- * @returns {Promise<{channel: string, bot_username: string|null}>}
- *   channel: 'telegram' | 'telegram-not-linked' | 'console' | 'webhook'
+ * Отправляет код активному провайдеру НА УКАЗАННЫЙ НОМЕР.
+ * @returns {Promise<{channel: string, provider: string|null}>}
+ *   channel: 'sms' (шлюз принял сообщение) | 'console' (не настроен или сбой — код в логе)
  */
 export async function deliverCode(phone, code) {
-  console.log(`📱 SMS-код для ${phone}: ${code}`); // код всегда дублируется в консоль
+  const provider = activeProvider();
 
-  if (MODE === 'telegram' && BOT_TOKEN) {
-    const link = getTelegramLink(phone);
-    if (link) {
-      const res = await tgApi('sendMessage', {
-        chat_id: link.chat_id,
-        text: `🔐 BLOOP: ваш код входа ${code}\n\nНикому его не говорите. Действует 5 минут.`,
-      });
-      if (res?.ok) return { channel: 'telegram', bot_username: botUsername };
-      console.warn('BLOOP SMS: Telegram sendMessage не удался:', res?.description);
-      return { channel: 'console', bot_username: null };
-    }
-    return { channel: 'telegram-not-linked', bot_username: botUsername };
-  }
-
-  if (MODE === 'webhook' && WEBHOOK_URL) {
-    try {
-      const res = await fetch(WEBHOOK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone, code, text: `BLOOP: код ${code}` }),
-      });
-      if (res.ok) return { channel: 'webhook', bot_username: null };
-      console.warn('BLOOP SMS: webhook вернул', res.status);
-    } catch (e) {
-      console.warn('BLOOP SMS: webhook недоступен:', e.message);
-    }
-  }
-
-  return { channel: 'console', bot_username: null };
-}
-
-/** Активен ли Telegram-канал (нужен для UI-подсказок на этапе «номер»). */
-export function telegramConfigured() {
-  return MODE === 'telegram' && !!BOT_TOKEN;
-}
-
-export function telegramBotUsername() {
-  return botUsername;
-}
-
-// Поллинг getUpdates: пользователь пишет боту свой номер (+79991234567) —
-// привязываем его Telegram-чат к телефону. Работает, только если задан токен.
-export async function startTelegramPoller() {
-  if (!telegramConfigured()) return;
-  try {
-    const me = await tgApi('getMe', {});
-    if (!me?.ok) {
-      console.warn('BLOOP SMS: Telegram-бот не отвечает, каналы: console. Проверьте BLOOP_TELEGRAM_BOT_TOKEN');
-      return;
-    }
-    botUsername = me.result.username;
-    console.log(`📱 SMS-доставка: Telegram-бот @${botUsername} готов. Пришлите ему свой номер телефона (+7…), чтобы получать коды входа.`);
-  } catch (e) {
-    console.warn('BLOOP SMS: getMe не удался:', e.message);
-    return;
-  }
-
-  let offset = 0;
-  const tick = async () => {
-    try {
-      const res = await tgApi('getUpdates', { offset, timeout: 25 });
-      if (res?.ok) {
-        for (const upd of res.result || []) {
-          offset = Math.max(offset, (upd.update_id || 0) + 1);
-          const msg = upd.message;
-          const text = String(msg?.text || '').trim();
-          const chatId = msg?.chat?.id;
-          if (!chatId || !text) continue;
-          const norm = '+' + text.replace(/[\s()\u2013\u2014-]|\+/g, '').replace(/\D/g, '');
-          if (/^\+\d{7,15}$/.test(norm)) {
-            saveTelegramLink(norm, chatId);
-            await tgApi('sendMessage', {
-              chat_id: chatId,
-              text: `✅ Номер ${norm} сохранён. Теперь коды входа BLOOP будут приходить в этот чат.`,
-            });
-          } else {
-            await tgApi('sendMessage', {
-              chat_id: chatId,
-              text: 'Пришлите номер телефона в формате +79991234567 — он будет привязан для получения кодов входа BLOOP.',
-            });
-          }
-        }
+  if (provider !== 'console') {
+    const def = PROVIDERS[provider];
+    if (!def) {
+      console.error(`❌ Неизвестный BLOOP_SMS_PROVIDER=${provider} (варианты: ${Object.keys(PROVIDERS).join(', ')})`);
+    } else if (!def.env.every(k => process.env[k])) {
+      console.error(`❌ Для ${provider} не заданы переменные: ${def.env.join(', ')} — SMS не уйдёт`);
+    } else {
+      try {
+        await def.send(process.env, phone, code);
+        console.log(`✅ SMS-код для ${phone} отправлен через ${provider}`);
+        return { channel: 'sms', provider };
+      } catch (e) {
+        console.error(`❌ ${provider} не смог доставить SMS на ${phone}: ${e.message}`);
       }
-    } catch (e) {
-      console.warn('BLOOP SMS: getUpdates ошибка:', e.message);
     }
-    setTimeout(tick, 1500);
-  };
-  tick();
+    console.log(`📱 Fallback — код для ${phone}: ${code}`);
+    return { channel: 'console', provider };
+  }
+
+  console.log(`📱 SMS-код для ${phone}: ${code} (SMS-шлюз не настроен — задайте BLOOP_SMS_PROVIDER, см. README)`);
+  return { channel: 'console', provider: null };
 }

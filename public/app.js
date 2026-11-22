@@ -259,12 +259,10 @@ async function phoneStart() {
     if (data.local_code) {
       // Локальная доставка: в офлайн-приложении SMS-шлюза нет — код сразу в тосте
       toast(`📡 SMS от BLOOP: код ${data.local_code}`, 15000);
-    } else if (data.delivery === 'telegram') {
-      toast(`✉️ Код отправлен в Telegram от бота @${data.bot_username || 'bot'} — откройте чат с ботом`, 8000);
-    } else if (data.delivery === 'telegram-not-linked') {
-      toast(`✉️ Отправьте номер ${phoneState.phone} боту @${data.bot_username || 'bot'} в Telegram — и коды будут приходить туда`, 10000);
+    } else if (data.delivery === 'sms') {
+      toast(`✉️ SMS с кодом отправлена на ${phoneState.phone}`, 8000);
     } else {
-      toast('📱 Код отправлен — он виден в консоли сервера', 6000);
+      toast('📱 Код отправлен — он виден в консоли сервера (настройте SMS-шлюз, см. README)', 8000);
     }
   } catch (err) {
     authFail(err.message);

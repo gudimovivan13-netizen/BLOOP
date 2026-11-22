@@ -20,7 +20,7 @@ import {
   createUser, findUserByPhone, savePhoneCode, getPhoneCode, bumpPhoneAttempts, deletePhoneCode,
 } from './src/db.js';
 import { hashPassword, verifyPassword, signToken, verifyToken, hashPhoneCode, verifyPhoneCode } from './src/auth.js';
-import { deliverCode, startTelegramPoller } from './src/sms.js';
+import { deliverCode } from './src/sms.js';
 import { upload, checkUploadSize, mediaKind, publicUrl, MAX_VIDEO_BYTES } from './src/media.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -156,7 +156,8 @@ app.post('/api/auth/phone/start', async (req, res) => {
   phoneLastSend.set(phone, Date.now());
   const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
   savePhoneCode(phone, hashPhoneCode(phone, code), Date.now() + CODE_TTL_MS);
-  // Доставка через слой sms.js: console (по умолчанию) / Telegram-бот / webhook.
+  // Доставка НА УКАЗАННЫЙ НОМЕР через слой sms.js: SMS-шлюз (SMS.ru / SMSC.ru
+  // / Twilio / свой webhook) или консоль сервера, если шлюз не настроен.
   const { channel, bot_username } = await deliverCode(phone, code);
   const smsDebug = process.env.BLOOP_SMS_DEBUG === '1';
   res.json({
@@ -599,5 +600,4 @@ io.on('connection', (socket) => {
 
 httpServer.listen(PORT, () => {
   console.log(`BLOOP запущен: http://localhost:${PORT}`);
-  startTelegramPoller(); // активен только при BLOOP_SMS_MODE=telegram + токене
 });

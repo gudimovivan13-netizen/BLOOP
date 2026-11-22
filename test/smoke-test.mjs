@@ -551,6 +551,85 @@ async function main() {
       botChatsB.data.chats?.some(c => c.peer?.is_bot && c.peer?.username === 'bot_smoke_helper'));
 
 
+    console.log('\n— v4: правка, удаление, пересылка, поиск, закрепы');
+    const carol = (await api('/api/me', { token: regC.data.token })).data.user;
+    const v4msg = await api(`/api/chats/${chat1.data.chat_id}/messages`, { method: 'POST', token: tokA, body: { text: 'Вилла на Кипре продаётся за 100' } });
+    check('тестовое сообщение отправлено', v4msg.status === 200 && v4msg.data.message?.id);
+    const edRes = await api(`/api/chats/${chat1.data.chat_id}/messages/${v4msg.data.message.id}/edit`, { method: 'POST', token: tokA, body: { text: 'Вилла на Кипре продаётся за 200' } });
+    check('правка сообщения работает', edRes.status === 200 && edRes.data.message?.text?.includes('200') && !!edRes.data.message?.edited_at);
+    const edBad = await api(`/api/chats/${chat1.data.chat_id}/messages/${v4msg.data.message.id}/edit`, { method: 'POST', token: tokB, body: { text: 'взлом' } });
+    check('править может только автор', edBad.status === 404);
+    const srch = await api(`/api/chats/${chat1.data.chat_id}/search?q=${encodeURIComponent('Кипре')}`, { token: tokB });
+    check('поиск по чату находит сообщение', srch.status === 200 && srch.data.messages?.some(m => m.id === v4msg.data.message.id));
+    const srchG = await api('/api/search/messages?q=Вилла', { token: tokB });
+    check('глобальный поиск по сообщениям', srchG.status === 200 && srchG.data.messages?.some(m => m.id === v4msg.data.message.id));
+
+    const grp = await api('/api/chats', { method: 'POST', token: tokA, body: { type: 'group', name: 'Кипр-план', member_ids: [bob.id] } });
+    check('группа создаётся', grp.status === 200 && grp.data.chat_id);
+    const fwdRes = await api(`/api/chats/${chat1.data.chat_id}/messages/${v4msg.data.message.id}/forward`, { method: 'POST', token: tokA, body: { chat_ids: [grp.data.chat_id] } });
+    check('пересылка с пометкой об авторе', fwdRes.status === 200 && fwdRes.data.messages?.[0]?.forwarded_from === 'Алиса');
+    const pinRes = await api(`/api/chats/${grp.data.chat_id}/pin`, { method: 'POST', token: tokA, body: { message_id: fwdRes.data.messages[0].id } });
+    check('сообщение закрепляется', pinRes.status === 200 && pinRes.data.pinned_message?.id === fwdRes.data.messages[0].id);
+    const chatsAfterPin = await api('/api/chats', { token: tokA });
+    const gChat = chatsAfterPin.data.chats.find(c => c.id === grp.data.chat_id);
+    check('закреп видно в списке чатов', gChat?.pinned_message?.id === fwdRes.data.messages[0].id);
+    await api(`/api/chats/${grp.data.chat_id}/pin-chat`, { method: 'POST', token: tokB, body: { pinned: true } });
+    const chatsBPin = await api('/api/chats', { token: tokB });
+    const gChatB = chatsBPin.data.chats.find(c => c.id === grp.data.chat_id);
+    check('закреплённый чат поднимается вверх', gChatB?.pinned === true && chatsBPin.data.chats[0]?.id === grp.data.chat_id);
+
+    console.log('\n— v4: группы');
+    const ren = await api(`/api/chats/${grp.data.chat_id}/group`, { method: 'POST', token: tokA, body: { name: 'Кипр 2026' } });
+    check('переименование создателем', ren.status === 200 && ren.data.name === 'Кипр 2026');
+    const renBad = await api(`/api/chats/${grp.data.chat_id}/group`, { method: 'POST', token: tokB, body: { name: 'нет прав' } });
+    check('переименование не-создателем запрещено', renBad.status === 403);
+    const addM = await api(`/api/chats/${grp.data.chat_id}/members`, { method: 'POST', token: tokA, body: { user_ids: [carol.id] } });
+    check('добавление участника', addM.status === 200 && addM.data.added === 1);
+    const memList = await api(`/api/chats/${grp.data.chat_id}/members`, { token: tokB });
+    check('список участников с пометкой создателя', memList.status === 200 && memList.data.members?.some(m => m.role === 'owner'));
+    const leave = await api(`/api/chats/${grp.data.chat_id}/leave`, { method: 'POST', token: tokB });
+    check('выход из группы', leave.status === 200);
+    const leaveBad = await api(`/api/chats/${grp.data.chat_id}/leave`, { method: 'POST', token: tokA });
+    check('создатель выйти не может', leaveBad.status === 400);
+    const delRes = await api(`/api/chats/${chat1.data.chat_id}/messages/${v4msg.data.message.id}/delete`, { method: 'POST', token: tokA });
+    check('удаление оставляет надгробие', delRes.status === 200 && delRes.data.message?.deleted === true && delRes.data.message?.text === '');
+
+    console.log('\n— v4: звонки (сигнализация)');
+    const sockV4A = await connectSocket(tokA);
+    const sockV4B = await connectSocket(tokB);
+    const incP = waitForEvent(sockV4B, 'call:incoming');
+    const ringP = waitForEvent(sockV4A, 'call:ringing');
+    sockV4A.emit('call:invite', { chat_id: chat1.data.chat_id, video: false });
+    const inc = await incP;
+    check('входящий звонок доходит до Боба', !!inc.call_id && inc.from?.display_name === 'Алиса');
+    check('вызывающий слышит гудки', (await ringP).call_id === inc.call_id);
+    const accP = waitForEvent(sockV4A, 'call:accepted');
+    sockV4B.emit('call:accept', { call_id: inc.call_id });
+    check('звонок принят', (await accP).call_id === inc.call_id);
+    const offP = waitForEvent(sockV4B, 'call:offer');
+    sockV4A.emit('call:offer', { call_id: inc.call_id, sdp: { type: 'offer', sdp: 'v=0' } });
+    check('оффер ретранслируется Бобу', (await offP).sdp?.type === 'offer');
+    const ansP = waitForEvent(sockV4A, 'call:answer');
+    sockV4B.emit('call:answer', { call_id: inc.call_id, sdp: { type: 'answer', sdp: 'v=0' } });
+    check('ответ ретранслируется Алисе', (await ansP).sdp?.type === 'answer');
+    const iceP = waitForEvent(sockV4B, 'call:ice');
+    sockV4A.emit('call:ice', { call_id: inc.call_id, candidate: { candidate: 'candidate-x' } });
+    check('ICE-кандидаты доходят', !!(await iceP).candidate);
+    const endP = waitForEvent(sockV4A, 'call:ended');
+    sockV4A.emit('call:end', { call_id: inc.call_id });
+    check('звонок завершается у обоих', (await endP).reason === 'hangup');
+    await sleep(400);
+    const hist = await api(`/api/chats/${chat1.data.chat_id}/messages`, { token: tokA });
+    check('история звонка записана в чат', hist.data.messages?.some(m => m.media_kind === 'call' && m.text?.includes('Звонок')));
+    const offline = await api(`/api/chats`, { method: 'POST', token: tokA, body: { type: 'direct', user_id: carol.id } });
+    const sockC = await connectSocket(regC.data.token);
+    await sleep(200);
+    sockC.close();
+    await sleep(300);
+    sockV4A.emit('call:invite', { chat_id: offline.data.chat_id, video: false });
+    const errP = waitForEvent(sockV4A, 'call:error', 3000);
+    check('звонок офлайн-пользователю отклоняется', ['offline', 'busy'].includes((await errP).reason));
+
 
   } finally {
     server.kill();

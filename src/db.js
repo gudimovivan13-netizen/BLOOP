@@ -51,9 +51,22 @@ CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id);
 
 // Миграции для баз, созданных до появления соцсети (v2), телефона/голоса (v4)
 // и почты/историй/опросов/реакций (v5).
+// v6: правка/удаление/пересылка сообщений, закреплённые чаты и сообщения, звонки.
 const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
 if (!userCols.includes('avatar')) db.exec('ALTER TABLE users ADD COLUMN avatar TEXT');
 if (!userCols.includes('bio')) db.exec("ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''");
+
+// v6: мета-колонки сообщений
+const msgCols6 = db.prepare('PRAGMA table_info(messages)').all().map(c => c.name);
+if (!msgCols6.includes('edited_at')) db.exec('ALTER TABLE messages ADD COLUMN edited_at TEXT');
+if (!msgCols6.includes('deleted')) db.exec('ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
+if (!msgCols6.includes('forwarded_from')) db.exec('ALTER TABLE messages ADD COLUMN forwarded_from TEXT');
+// v6: закреплённое сообщение чата и закреплённый чат в списке
+const chatCols6 = db.prepare('PRAGMA table_info(chats)').all().map(c => c.name);
+if (!chatCols6.includes('pinned_message_id')) db.exec('ALTER TABLE chats ADD COLUMN pinned_message_id INTEGER');
+const memberCols6 = db.prepare('PRAGMA table_info(chat_members)').all().map(c => c.name);
+if (!memberCols6.includes('pinned')) db.exec('ALTER TABLE chat_members ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+
 if (!userCols.includes('phone')) db.exec('ALTER TABLE users ADD COLUMN phone TEXT');
 if (!userCols.includes('email')) db.exec('ALTER TABLE users ADD COLUMN email TEXT');
 if (!userCols.includes('email_verified')) db.exec('ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0');
@@ -91,9 +104,9 @@ CREATE TABLE IF NOT EXISTS story_views (
 `);
 
 const msgCols = db.prepare('PRAGMA table_info(messages)').all().map(c => c.name);
-if (!msgCols.includes('media_kind')) db.exec("ALTER TABLE messages ADD COLUMN media_kind TEXT DEFAULT 'image'");
-if (!msgCols.includes('reply_to')) db.exec('ALTER TABLE messages ADD COLUMN reply_to INTEGER');
-if (!msgCols.includes('kb')) db.exec('ALTER TABLE messages ADD COLUMN kb TEXT'); // инлайн-клавиатура ботов
+if (!msgCols6.includes('media_kind')) db.exec("ALTER TABLE messages ADD COLUMN media_kind TEXT DEFAULT 'image'");
+if (!msgCols6.includes('reply_to')) db.exec('ALTER TABLE messages ADD COLUMN reply_to INTEGER');
+if (!msgCols6.includes('kb')) db.exec('ALTER TABLE messages ADD COLUMN kb TEXT'); // инлайн-клавиатура ботов
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS post_reactions (
@@ -201,15 +214,16 @@ export function chatMemberIds(chatId) {
   return db.prepare('SELECT user_id FROM chat_members WHERE chat_id = ?').all(chatId).map(r => r.user_id);
 }
 
-export function insertMessage(chatId, senderId, text, image, mediaKind = 'image', replyTo = null, kb = null) {
+export function insertMessage(chatId, senderId, text, image, mediaKind = 'image', replyTo = null, kb = null, forwardedFrom = null) {
   const { lastInsertRowid } = db.prepare(
-    'INSERT INTO messages (chat_id, sender_id, text, image, media_kind, reply_to, kb) VALUES (?, ?, ?, ?, ?, ?, ?)'
-  ).run(chatId, senderId, text, image, mediaKind, replyTo, kb == null ? null : JSON.stringify(kb));
+    'INSERT INTO messages (chat_id, sender_id, text, image, media_kind, reply_to, kb, forwarded_from) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(chatId, senderId, text, image, mediaKind, replyTo, kb == null ? null : JSON.stringify(kb), forwardedFrom);
   return getMessageById(Number(lastInsertRowid));
 }
 
 const MSG_SELECT = `
   SELECT m.id, m.chat_id, m.sender_id, m.text, m.image, m.media_kind, m.created_at, m.reply_to, m.kb,
+         m.edited_at, m.deleted, m.forwarded_from,
          u.username, u.display_name,
          r.id AS r_id, r.text AS r_text, r.image AS r_image, r.media_kind AS r_kind, r.sender_id AS r_sender,
          ru.display_name AS r_author
@@ -246,8 +260,18 @@ function msgRowOut(row, viewerId) {
     username: row.username,
     display_name: row.display_name,
     kb: parseKb(row.kb),
+    edited_at: row.edited_at || null,
+    forwarded_from: row.forwarded_from || null,
     ...messageReactions(row.id, viewerId),
   };
+  if (row.deleted) {
+    // надгробие: содержимое стёрто, осталась метка «сообщение удалено»
+    out.deleted = true;
+    out.text = '';
+    out.image = null;
+    out.kb = null;
+    return out;
+  }
   if (row.r_id) {
     out.reply = {
       id: row.r_id,
@@ -285,7 +309,7 @@ export function reactMessage(messageId, userId, emoji) {
 
 export function listChatsForUser(userId) {
   const chats = db.prepare(`
-    SELECT c.id, c.type, c.name, c.created_at
+    SELECT c.id, c.type, c.name, c.created_at, c.pinned_message_id, cm.pinned
     FROM chats c JOIN chat_members cm ON cm.chat_id = c.id
     WHERE cm.user_id = ?
   `).all(userId);
@@ -310,9 +334,11 @@ export function listChatsForUser(userId) {
   `);
   const memberCount = db.prepare('SELECT COUNT(*) AS n FROM chat_members WHERE chat_id = ?');
 
+  const pinnedMsg = db.prepare('SELECT pinned_message_id AS mid FROM chats WHERE id = ?');
   return chats.map(c => {
     const mark = lastMsg.get(c.id);
     const lr = lastRead.get(c.id, userId).lr;
+    const pmid = pinnedMsg.get(c.id)?.mid || null;
     return {
       id: c.id,
       type: c.type,
@@ -322,8 +348,121 @@ export function listChatsForUser(userId) {
       last_message: mark || null,
       unread: unread.get(c.id, lr, userId).n,
       updated_at: mark ? mark.created_at : c.created_at,
+      pinned: !!c.pinned,
+      pinned_message_id: pmid,
+      pinned_message: pmid ? (getMessageById(pmid) || null) : null,
     };
-  }).sort((a, b) => (b.last_message?.id ?? 0) - (a.last_message?.id ?? 0));
+  }).sort((a, b) => (b.pinned - a.pinned) || ((b.last_message?.id ?? 0) - (a.last_message?.id ?? 0)));
+}
+
+/* ---------- v6: правка, удаление, пересылка, поиск, закрепы, группы, звонки ---------- */
+
+export function editMessage(messageId, userId, text) {
+  const clean = String(text || '').trim().slice(0, 4000);
+  if (!clean) throw new Error('Текст пуст');
+  const r = db.prepare(
+    "UPDATE messages SET text = ?, edited_at = datetime('now') WHERE id = ? AND sender_id = ? AND deleted = 0"
+  ).run(clean, messageId, userId);
+  return r.changes > 0 ? getMessageById(messageId) : null;
+}
+
+export function deleteMessageRow(messageId, userId) {
+  const r = db.prepare(
+    "UPDATE messages SET deleted = 1, text = '', image = NULL, kb = NULL, media_kind = 'image' WHERE id = ? AND sender_id = ?"
+  ).run(messageId, userId);
+  return r.changes > 0 ? getMessageById(messageId) : null;
+}
+
+export function forwardMessage(sourceId, toChatId, userId) {
+  const src = getMessageById(sourceId);
+  if (!src || src.deleted) return null;
+  // голосовое пересылается как есть, звонок — без содержимого
+  const kind = src.media_kind === 'call' ? 'image' : (src.media_kind || 'image');
+  return insertMessage(toChatId, userId, src.text || '', src.image, kind, null, null, src.display_name);
+}
+
+// поиск без учёта регистра: INSTR чувствителен к регистру, поэтому три варианта
+function searchConds(t) {
+  const vars = [...new Set([t, t.toLowerCase(), t.toUpperCase()])];
+  return { conds: vars.map(() => 'INSTR(m.text, ?) > 0').join(' OR '), vars };
+}
+
+export function searchMessages(chatId, q, limit = 30) {
+  const t = String(q || '').trim().slice(0, 120);
+  if (!t) return [];
+  const { conds, vars } = searchConds(t);
+  const rows = db.prepare(`
+    ${MSG_SELECT}
+    WHERE m.chat_id = ? AND m.deleted = 0 AND m.text <> '' AND (${conds})
+    ORDER BY m.id DESC LIMIT ?
+  `).all(chatId, ...vars, limit);
+  return rows.map(r => msgRowOut(r, null));
+}
+
+export function searchMessagesAll(userId, q, limit = 40) {
+  const t = String(q || '').trim().slice(0, 120);
+  if (!t) return [];
+  const { conds, vars } = searchConds(t);
+  const rows = db.prepare(`
+    ${MSG_SELECT}
+    JOIN chat_members cm ON cm.chat_id = m.chat_id AND cm.user_id = ?
+    WHERE m.deleted = 0 AND m.text <> '' AND (${conds})
+    ORDER BY m.id DESC LIMIT ?
+  `).all(userId, ...vars, limit);
+  return rows.map(r => msgRowOut(r, null));
+}
+
+export function setPinnedMessage(chatId, messageId) {
+  const mid = Number(messageId) || null;
+  if (mid) {
+    const m = db.prepare('SELECT id FROM messages WHERE id = ? AND chat_id = ? AND deleted = 0').get(mid, chatId);
+    if (!m) return null;
+  }
+  db.prepare('UPDATE chats SET pinned_message_id = ? WHERE id = ?').run(mid, chatId);
+  return mid ? getMessageById(mid) : null;
+}
+
+export function setChatPinned(chatId, userId, pinned) {
+  db.prepare('UPDATE chat_members SET pinned = ? WHERE chat_id = ? AND user_id = ?')
+    .run(pinned ? 1 : 0, chatId, userId);
+}
+
+export function getChatRow(chatId) {
+  return db.prepare('SELECT id, type, name, created_by, pinned_message_id FROM chats WHERE id = ?').get(chatId) || null;
+}
+
+export function listChatMembers(chatId) {
+  // роль берём из chats.created_by — колонка chat_members.role исторически всегда 'member'
+  return db.prepare(`
+    SELECT u.id, u.username, u.display_name, u.avatar, u.is_bot,
+           (CASE WHEN c.created_by = u.id THEN 'owner' ELSE 'member' END) AS role
+    FROM chat_members cm
+    JOIN users u ON u.id = cm.user_id
+    JOIN chats c ON c.id = cm.chat_id
+    WHERE cm.chat_id = ?
+    ORDER BY (c.created_by = u.id) DESC, u.display_name
+  `).all(chatId);
+}
+
+export function renameChat(chatId, name) {
+  const title = String(name || '').trim().slice(0, 60);
+  if (!title) throw new Error('Название пустое');
+  db.prepare('UPDATE chats SET name = ? WHERE id = ?').run(title, chatId);
+  return title;
+}
+
+export function addChatMembers(chatId, ids) {
+  let added = 0;
+  for (const id of ids) {
+    const r = db.prepare('INSERT OR IGNORE INTO chat_members (chat_id, user_id) VALUES (?, ?)').run(chatId, id);
+    added += r.changes;
+  }
+  return added;
+}
+
+export function leaveChat(chatId, userId) {
+  const r = db.prepare('DELETE FROM chat_members WHERE chat_id = ? AND user_id = ?').run(chatId, userId);
+  return r.changes > 0;
 }
 
 export function markRead(chatId, userId, messageId) {
@@ -942,3 +1081,10 @@ export function publicBot(b, { withToken = false } = {}) {
     } : {}),
   };
 }
+
+// v6: индексы для частых выборок (таблицы к этому моменту созданы)
+db.exec(`
+CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages(chat_id, id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, id);
+CREATE INDEX IF NOT EXISTS idx_posts_id ON posts(id);
+`);

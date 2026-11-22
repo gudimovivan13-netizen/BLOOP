@@ -19,6 +19,8 @@ let currentChatId = null;
 let messagesByChat = new Map();      // chat_id -> [messages]
 const typingTimers = new Map();      // chat_id -> timeout id
 let pendingImage = null;             // dataURL в чате
+let editingMessage = null;           // v4: сообщение в режиме правки
+let forwardMsg = null;               // v4: сообщение для пересылки
 
 /* состояние соцсети */
 let currentPage = 'feed';
@@ -473,6 +475,9 @@ async function openChat(id) {
 
   renderChatStatus(chat);
   setupBotChat(chat);
+  updateCallButtons(chat);
+  renderPinnedBar(chat);
+  restoreDraft(id);
   updateTypingBar();
 
   chat.unread = 0;
@@ -531,6 +536,14 @@ function msgEl(m) {
   const el = document.createElement('div');
   el.className = 'msg' + (m.sender_id === me.id ? ' mine' : '');
   el.dataset.id = m.id;
+  if (m.deleted) el.classList.add('deleted');
+  if (m.media_kind === 'call') el.classList.add('sysmsg');
+  if (m.forwarded_from) {
+    const fwd = document.createElement('div');
+    fwd.className = 'fwd-note';
+    fwd.textContent = `↪ Переслано от ${m.forwarded_from}`;
+    el.appendChild(fwd);
+  }
 
   const chat = chatById(m.chat_id);
   if (chat?.type === 'group' && m.sender_id !== me.id) {
@@ -570,10 +583,21 @@ function msgEl(m) {
     el.appendChild(img);
   }
 
-  if (m.text) {
+  if (m.deleted) {
+    const body = document.createElement('div');
+    body.className = 'body deleted-note';
+    body.textContent = 'Сообщение удалено';
+    el.appendChild(body);
+  } else if (m.text) {
     const body = document.createElement('div');
     body.className = 'body';
     body.textContent = m.text;
+    if (m.edited_at) {
+      const em = document.createElement('span');
+      em.className = 'edited-note';
+      em.textContent = ' · изменено';
+      body.appendChild(em);
+    }
     el.appendChild(body);
   }
 
@@ -665,7 +689,7 @@ function openMsgMenu(m, el, rect) {
     b.addEventListener('click', () => { pop.remove(); reactMessageUI(m, emoji); });
     rxRow.appendChild(b);
   }
-  pop.append(replyBtn, rxRow);
+  pop.append(replyBtn, ...msgMenuExtras(m), rxRow);
   document.body.appendChild(pop);
   const r = rect.el?.getBoundingClientRect() || el.getBoundingClientRect();
   pop.style.left = `${Math.max(8, Math.min(rect.x ?? r.left, window.innerWidth - 220))}px`;
@@ -804,6 +828,11 @@ input.addEventListener('keydown', (e) => {
 
 $('#btn-send').addEventListener('click', sendMessage);
 
+// v4: черновик чата сохраняется на каждое изменение ввода
+input.addEventListener('input', () => {
+  if (currentChatId) localStorage.setItem(draftKey(currentChatId), input.value.slice(0, 2000));
+});
+
 let typingSentAt = 0;
 function sendTyping(state) {
   const now = Date.now();
@@ -853,8 +882,10 @@ function clearPendingImage() {
 }
 
 async function sendMessage() {
+  if (editingMessage) return sendEdit();
   const text = input.value.trim();
   if (!currentChatId || (!text && !pendingImage && !pendingVoice)) return;
+  localStorage.removeItem(draftKey(currentChatId));
   input.value = '';
   input.style.height = 'auto';
   const image = pendingImage;
@@ -1043,6 +1074,14 @@ $('#group-create').addEventListener('click', async () => {
 
 /* ---------- «назад» на мобильных ---------- */
 
+// v4: клик по названию чата — профиль собеседника или управление группой
+$('.chat-title').addEventListener('click', () => {
+  const chat = chatById(currentChatId);
+  if (!chat) return;
+  if (chat.type === 'group' && !LOCAL_MODE) openChatInfo(chat);
+  else if (chat.peer && !chat.peer.is_bot) openProfile(chat.peer.id);
+});
+
 $('#btn-back').addEventListener('click', () => {
   $('#page-messages').classList.remove('show-chat');
   currentChatId = null;
@@ -1115,6 +1154,7 @@ async function connectSocket() {
     const t = typingTimers.get(m.chat_id);
     if (t) { clearTimeout(t); typingTimers.delete(m.chat_id); }
     if (m.chat_id === currentChatId) updateTypingBar();
+    notifyNewMessage(m);
   });
 
   socket.on('typing', ({ chat_id, user_id, typing }) => {
@@ -1129,6 +1169,41 @@ async function connectSocket() {
   });
 
   socket.on('chat:new', () => refreshChats());
+
+  /* --- v4: правка/удаление/закрепы/группы --- */
+
+  socket.on('message:update', ({ chat_id, message }) => {
+    const list = messagesByChat.get(chat_id);
+    if (list) {
+      const i = list.findIndex(x => x.id === message.id);
+      if (i >= 0) list[i] = message;
+    }
+    if (chat_id === currentChatId) rerenderMessage(message);
+    refreshChats();
+  });
+
+  socket.on('chat:updated', ({ chat_id, name, pinned_message }) => {
+    const chat = chatById(chat_id);
+    if (!chat) return;
+    if (name) chat.name = name;
+    if (pinned_message !== undefined) chat.pinned_message = pinned_message;
+    refreshChats();
+    if (chat_id === currentChatId) {
+      if (name) $('#chat-name').textContent = name;
+      if (pinned_message !== undefined) renderPinnedBar(chat);
+    }
+  });
+
+  /* --- v4: звонки --- */
+
+  socket.on('call:incoming', (data) => onIncomingCall(data));
+  socket.on('call:ringing', () => setCallStatus('Вызываем…'));
+  socket.on('call:accepted', () => onCallAccepted());
+  socket.on('call:offer', ({ call_id, sdp }) => onRemoteOffer(call_id, sdp));
+  socket.on('call:answer', ({ call_id, sdp }) => onRemoteAnswer(call_id, sdp));
+  socket.on('call:ice', ({ call_id, candidate }) => onRemoteIce(call_id, candidate));
+  socket.on('call:ended', ({ reason }) => onCallEnded(reason));
+  socket.on('call:error', ({ reason }) => onCallError(reason));
 
   /* --- realtime соцсети (v3) --- */
 
@@ -2840,6 +2915,9 @@ function renderAccentRow() {
 function openSettings() {
   renderThemeSeg();
   renderAccentRow();
+  renderFontSeg();
+  $('#set-sound').checked = localStorage.getItem('bloop_sound') !== 'off';
+  $('#set-browser-notif').checked = localStorage.getItem('bloop_notif') === 'on';
   $('#settings-modal').classList.remove('hidden');
 }
 
@@ -3634,4 +3712,775 @@ $('#bot-open-miniapp').addEventListener('click', async () => {
   } catch (err) {
     alert('Ошибка: ' + err.message);
   }
+});
+
+/* ================ v4: черновики, эмодзи, поиск, закрепы, звонки ================ */
+
+/* ---------- черновики сообщений ---------- */
+
+function draftKey(chatId) { return `bloop_draft_${me?.id ?? 0}_${chatId}`; }
+
+function restoreDraft(chatId) {
+  // при открытии чата закрываем панели и сбрасываем правку
+  $('#emoji-panel')?.classList.add('hidden');
+  $('#search-panel')?.classList.add('hidden');
+  $('#search-results')?.replaceChildren();
+  $('#edit-bar')?.classList.add('hidden');
+  editingMessage = null;
+  input.value = localStorage.getItem(draftKey(chatId)) || '';
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+}
+
+/* ---------- эмодзи-панель ---------- */
+
+const EMOJI_GROUPS = {
+  'Смайлы': ['😀', '😁', '😂', '🤣', '😊', '😍', '😘', '😎', '🤔', '😴', '😢', '😭', '😡', '🥳', '🤩', '😇', '🙃', '😅', '😋', '🤗'],
+  'Жесты': ['👍', '👎', '👌', '✌️', '🤞', '🤟', '🤙', '👋', '🙌', '👏', '🙏', '💪', '🫶', '👊', '🖖', '🤝'],
+  'Сердца': ['❤️', '🔥', '💜', '💙', '💚', '💛', '🧡', '🖤', '💔', '💖', '💝', '✨', '⭐', '💯', '🎉', '⚡'],
+  'Животные': ['🐶', '🐱', '🦊', '🐻', '🐼', '🐸', '🐵', '🦄', '🐝', '🦋', '🐢', '🐬', '🦉', '🐧', '🐙', '🦖'],
+  'Еда': ['🍕', '🍔', '🍟', '🌮', '🍣', '🍰', '☕', '🍺', '🍓', '🍉', '🍪', '🍫', '🍩', '🥑', '🍿', '🍯'],
+};
+const EMOJI_RECENT_KEY = 'bloop_emoji_recent';
+
+function recentEmoji() {
+  try { return JSON.parse(localStorage.getItem(EMOJI_RECENT_KEY)) || []; } catch { return []; }
+}
+
+function pushRecentEmoji(e) {
+  const r = recentEmoji().filter(x => x !== e);
+  r.unshift(e);
+  localStorage.setItem(EMOJI_RECENT_KEY, JSON.stringify(r.slice(0, 16)));
+}
+
+function buildEmojiPanel() {
+  const panel = $('#emoji-panel');
+  panel.replaceChildren();
+  const groups = [['Часто', recentEmoji()], ...Object.entries(EMOJI_GROUPS)];
+  for (const [title, list] of groups) {
+    if (!list.length) continue;
+    const h = document.createElement('div');
+    h.className = 'emoji-h';
+    h.textContent = title;
+    const grid = document.createElement('div');
+    grid.className = 'emoji-grid';
+    for (const e of list) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = e;
+      b.addEventListener('click', () => {
+        const st = input.selectionStart ?? input.value.length;
+        input.setRangeText(e, st, input.selectionEnd ?? st, 'end');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.focus();
+        pushRecentEmoji(e);
+        buildEmojiPanel(); // обновить секцию «Часто»
+      });
+      grid.appendChild(b);
+    }
+    panel.append(h, grid);
+  }
+}
+
+$('#btn-emoji')?.addEventListener('click', () => {
+  const panel = $('#emoji-panel');
+  const show = panel.classList.contains('hidden');
+  if (show) buildEmojiPanel();
+  panel.classList.toggle('hidden', !show);
+});
+
+/* ---------- поиск по сообщениям чата ---------- */
+
+let searchTimer = null;
+
+$('#btn-search')?.addEventListener('click', () => {
+  const sp = $('#search-panel');
+  const show = sp.classList.contains('hidden');
+  sp.classList.toggle('hidden', !show);
+  if (show) {
+    $('#search-input').value = '';
+    $('#search-results').replaceChildren();
+    $('#search-input').focus();
+  }
+});
+$('#search-close')?.addEventListener('click', () => $('#search-panel').classList.add('hidden'));
+$('#search-input')?.addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(doChatSearch, 300);
+});
+
+function escHtml(t) {
+  return String(t ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function doChatSearch() {
+  const q = $('#search-input').value.trim();
+  const box = $('#search-results');
+  if (!currentChatId || q.length < 2) { box.replaceChildren(); return; }
+  let msgs = [];
+  try {
+    ({ messages: msgs } = await api(`/api/chats/${currentChatId}/search?q=${encodeURIComponent(q)}`));
+  } catch { return; }
+  box.replaceChildren();
+  if (!msgs.length) {
+    const empty = document.createElement('div');
+    empty.className = 'sp-empty';
+    empty.textContent = 'Ничего не найдено';
+    box.appendChild(empty);
+    return;
+  }
+  for (const m of msgs) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'sp-row-res';
+    row.innerHTML = `<b>${escHtml(m.display_name)}</b><span>${hhmm(m.created_at)}</span><p>${escHtml(m.text).slice(0, 140)}</p>`;
+    row.addEventListener('click', () => {
+      $('#search-panel').classList.add('hidden');
+      jumpToMessage(m.id);
+    });
+    box.appendChild(row);
+  }
+}
+
+async function jumpToMessage(mid) {
+  const list = messagesByChat.get(currentChatId) || [];
+  if (!list.some(x => x.id === mid)) {
+    // сообщение в старой части истории — подтягиваем окно вокруг него
+    try {
+      const { messages } = await api(`/api/chats/${currentChatId}/messages?before=${mid + 1}&limit=60`);
+      messagesByChat.set(currentChatId, messages);
+      renderMessages(messages);
+    } catch { return; }
+  }
+  const el = document.querySelector(`#messages .msg[data-id="${mid}"]`);
+  if (el) {
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.classList.add('flash');
+    setTimeout(() => el.classList.remove('flash'), 1600);
+  }
+}
+
+/* ---------- закреплённое сообщение чата ---------- */
+
+function renderPinnedBar(chat) {
+  const bar = $('#pinned-bar');
+  const pm = chat?.pinned_message;
+  if (!pm || pm.deleted) { bar.classList.add('hidden'); return; }
+  $('#pin-author').textContent = pm.display_name || '';
+  $('#pin-text').textContent = pm.text || (pm.media_kind === 'voice' ? 'Голосовое' : 'Изображение');
+  bar.classList.remove('hidden');
+}
+
+$('#pin-unpin')?.addEventListener('click', async () => {
+  if (!currentChatId) return;
+  try {
+    const r = await api(`/api/chats/${currentChatId}/pin`, { method: 'POST', body: { message_id: null } });
+    const chat = chatById(currentChatId);
+    if (chat) chat.pinned_message = r.pinned_message;
+    renderPinnedBar(chat);
+    refreshChats();
+    toast('Сообщение откреплено');
+  } catch (e) { toast(e.message); }
+});
+
+$('#pinned-bar')?.addEventListener('click', (e) => {
+  if (e.target.closest('#pin-unpin')) return;
+  const mid = chatById(currentChatId)?.pinned_message?.id;
+  if (mid) jumpToMessage(mid);
+});
+
+async function togglePin(m) {
+  const chat = chatById(m.chat_id);
+  const isPinned = chat?.pinned_message?.id === m.id;
+  try {
+    const r = await api(`/api/chats/${m.chat_id}/pin`, { method: 'POST', body: { message_id: isPinned ? null : m.id } });
+    if (chat) chat.pinned_message = r.pinned_message;
+    refreshChats();
+    if (m.chat_id === currentChatId) renderPinnedBar(chat);
+    toast(isPinned ? 'Сообщение откреплено' : 'Сообщение закреплено');
+  } catch (e) { toast(e.message); }
+}
+
+/* ---------- правка сообщения ---------- */
+
+function startEdit(m) {
+  editingMessage = m;
+  input.value = m.text;
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+  $('#edit-bar').classList.remove('hidden');
+  input.focus();
+}
+
+function cancelEdit() {
+  editingMessage = null;
+  $('#edit-bar').classList.add('hidden');
+  if (currentChatId) restoreDraft(currentChatId);
+}
+
+$('#edit-cancel')?.addEventListener('click', cancelEdit);
+
+async function sendEdit() {
+  const m = editingMessage;
+  const text = input.value.trim();
+  if (!m || !text) return;
+  editingMessage = null;
+  $('#edit-bar').classList.add('hidden');
+  localStorage.removeItem(draftKey(m.chat_id));
+  input.value = '';
+  input.style.height = 'auto';
+  try {
+    await api(`/api/chats/${m.chat_id}/messages/${m.id}/edit`, { method: 'POST', body: { text } });
+    // обновление придёт событием message:update
+  } catch (e) {
+    toast('Не сохранено: ' + e.message);
+    input.value = text;
+  }
+}
+
+/* ---------- дополнительные пункты меню сообщения ---------- */
+
+const V4_SVGS = {
+  pen: '<svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l10.5-10.5a2.1 2.1 0 0 0-3-3L5 17v3z" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linejoin="round"/></svg>',
+  copy: '<svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M5 15V6a2 2 0 0 1 2-2h9" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round"/></svg>',
+  fwd: '<svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5.5 20.5 12 14 18.5v-4S6 14 4 19c0-7 4-9.5 10-9.5z" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linejoin="round"/></svg>',
+  pin: '<svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3z" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linejoin="round"/><path d="M12 14v7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
+  trash: '<svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 7h13M9.5 7V5.6c0-.6.5-1.1 1.1-1.1h2.8c.6 0 1.1.5 1.1 1.1V7M7 7l.8 11.3c.1.7.6 1.2 1.3 1.2h5.8c.7 0 1.2-.5 1.3-1.2L17 7" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>',
+};
+
+function menuBtn(svg, label) {
+  const b = document.createElement('button');
+  b.className = 'ghost-btn';
+  b.innerHTML = svg + `<span>${label}</span>`;
+  return b;
+}
+
+function withAction(b, fn) {
+  b.addEventListener('click', () => { $('#msg-pop')?.remove(); fn(); });
+  return b;
+}
+
+function msgMenuExtras(m) {
+  const btns = [];
+  const chat = chatById(m.chat_id);
+  const canEdit = !m.deleted && m.sender_id === me.id && (m.text || '').length > 0 && !m.image && m.media_kind !== 'call';
+  if (canEdit) btns.push(withAction(menuBtn(V4_SVGS.pen, 'Править'), () => startEdit(m)));
+  if (!m.deleted && m.text) {
+    btns.push(withAction(menuBtn(V4_SVGS.copy, 'Копировать'), async () => {
+      try { await navigator.clipboard.writeText(m.text); toast('Скопировано'); } catch { toast('Не удалось скопировать'); }
+    }));
+  }
+  if (!m.deleted && (m.text || m.image)) btns.push(withAction(menuBtn(V4_SVGS.fwd, 'Переслать'), () => openForwardModal(m)));
+  const isPinned = chat?.pinned_message?.id === m.id;
+  if (!m.deleted && m.media_kind !== 'call') {
+    btns.push(withAction(menuBtn(V4_SVGS.pin, isPinned ? 'Открепить' : 'Закрепить'), () => togglePin(m)));
+  }
+  if (!m.deleted && m.sender_id === me.id && m.media_kind !== 'call') {
+    btns.push(withAction(menuBtn(V4_SVGS.trash, 'Удалить'), async () => {
+      try { await api(`/api/chats/${m.chat_id}/messages/${m.id}/delete`, { method: 'POST' }); }
+      catch (e) { toast(e.message); }
+    }));
+  }
+  return btns;
+}
+
+/* ---------- пересылка сообщения ---------- */
+
+$('#forward-cancel')?.addEventListener('click', () => {
+  forwardMsg = null;
+  $('#forward-modal').classList.add('hidden');
+});
+$('#forward-modal')?.addEventListener('click', (e) => {
+  if (e.target === $('#forward-modal')) { forwardMsg = null; $('#forward-modal').classList.add('hidden'); }
+});
+
+function openForwardModal(m) {
+  forwardMsg = m;
+  const box = $('#forward-list');
+  box.replaceChildren();
+  const list = chats.filter(c => c.id !== m.chat_id);
+  if (!list.length) box.textContent = 'Нет других чатов';
+  for (const c of list) {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'fw-row';
+    row.dataset.chatId = c.id;
+    const who = c.type === 'direct' ? c.peer : { id: c.id + 1000, display_name: c.name || 'Группа' };
+    row.appendChild(avatarEl(who, true));
+    const name = document.createElement('span');
+    name.textContent = c.type === 'direct' ? (c.peer?.display_name || '') : (c.name || 'Группа');
+    row.appendChild(name);
+    row.addEventListener('click', () => row.classList.toggle('sel'));
+    box.appendChild(row);
+  }
+  $('#forward-modal').classList.remove('hidden');
+}
+
+$('#forward-go')?.addEventListener('click', async () => {
+  const ids = [...document.querySelectorAll('#forward-list .fw-row.sel')].map(r => Number(r.dataset.chatId));
+  if (!forwardMsg || !ids.length) return toast('Выберите чаты');
+  try {
+    const { messages } = await api(`/api/chats/${forwardMsg.chat_id}/messages/${forwardMsg.id}/forward`, { method: 'POST', body: { chat_ids: ids } });
+    toast(`Переслано в ${new Set(messages.map(x => x.chat_id)).size} чат(а)`);
+    for (const msg of messages) {
+      if (msg.chat_id === currentChatId) {
+        const list = messagesByChat.get(currentChatId) || [];
+        if (!list.some(x => x.id === msg.id)) {
+          list.push(msg);
+          messagesByChat.set(currentChatId, list);
+          appendMessage(msg);
+        }
+      }
+    }
+    refreshChats();
+  } catch (e) { toast(e.message); }
+  forwardMsg = null;
+  $('#forward-modal').classList.add('hidden');
+});
+
+/* ---------- группы: информация и управление ---------- */
+
+$('#ci-close')?.addEventListener('click', () => $('#chatinfo-modal').classList.add('hidden'));
+$('#chatinfo-modal')?.addEventListener('click', (e) => {
+  if (e.target === $('#chatinfo-modal')) $('#chatinfo-modal').classList.add('hidden');
+});
+
+async function openChatInfo(chat) {
+  let data;
+  try { data = await api(`/api/chats/${chat.id}/members`); }
+  catch (e) { return toast(e.message); }
+  const isOwner = data.chat?.created_by === me.id;
+  $('#ci-title').textContent = chat.name || 'Группа';
+  $('#ci-rename-row').classList.toggle('hidden', !isOwner);
+  $('#ci-name').value = chat.name || '';
+  $('#ci-add-row').classList.toggle('hidden', !isOwner);
+  $('#ci-leave').classList.toggle('hidden', isOwner);
+  $('#ci-pinned').checked = !!chat.pinned;
+
+  const membersBox = $('#ci-members');
+  membersBox.replaceChildren();
+  const memberIds = new Set(data.members.map(u => u.id));
+  for (const u of data.members) {
+    const row = document.createElement('div');
+    row.className = 'ci-member';
+    row.appendChild(avatarEl(u, true));
+    const name = document.createElement('span');
+    name.textContent = u.display_name + (u.is_bot ? ' 🤖' : '');
+    row.appendChild(name);
+    if (u.role === 'owner') {
+      const tag = document.createElement('span');
+      tag.className = 'ci-role';
+      tag.textContent = 'создатель';
+      row.appendChild(tag);
+    }
+    membersBox.appendChild(row);
+  }
+
+  // список тех, кого можно добавить
+  const sel = $('#ci-user');
+  sel.replaceChildren();
+  try {
+    const { users } = await api('/api/users');
+    for (const u of users.filter(u => !memberIds.has(u.id))) {
+      const o = document.createElement('option');
+      o.value = u.id;
+      o.textContent = `${u.display_name} (@${u.username})`;
+      sel.appendChild(o);
+    }
+  } catch { /* селект останется пустым */ }
+
+  $('#chatinfo-modal').classList.remove('hidden');
+}
+
+$('#ci-rename-save')?.addEventListener('click', async () => {
+  try {
+    await api(`/api/chats/${currentChatId}/group`, { method: 'POST', body: { name: $('#ci-name').value } });
+    $('#chatinfo-modal').classList.add('hidden');
+  } catch (e) { toast(e.message); }
+});
+
+$('#ci-add')?.addEventListener('click', async () => {
+  const id = Number($('#ci-user').value);
+  if (!id) return toast('Выберите, кого добавить');
+  try {
+    await api(`/api/chats/${currentChatId}/members`, { method: 'POST', body: { user_ids: [id] } });
+    toast('Участник добавлен');
+    openChatInfo(chatById(currentChatId));
+  } catch (e) { toast(e.message); }
+});
+
+$('#ci-pinned')?.addEventListener('change', async (e) => {
+  try {
+    await api(`/api/chats/${currentChatId}/pin-chat`, { method: 'POST', body: { pinned: e.target.checked } });
+    refreshChats();
+    toast(e.target.checked ? 'Чат закреплён' : 'Чат откреплён');
+  } catch (err) { toast(err.message); }
+});
+
+$('#ci-leave')?.addEventListener('click', async () => {
+  if (!confirm('Выйти из группы?')) return;
+  try {
+    await api(`/api/chats/${currentChatId}/leave`, { method: 'POST' });
+    $('#chatinfo-modal').classList.add('hidden');
+    currentChatId = null;
+    $('#chat-view').classList.add('hidden');
+    $('#empty-state').classList.remove('hidden');
+    $('#page-messages').classList.remove('show-chat');
+    refreshChats();
+  } catch (e) { toast(e.message); }
+});
+
+/* ---------- звук и уведомления о сообщениях ---------- */
+
+let audioCtx = null;
+
+function blip(force) {
+  if (!force && localStorage.getItem('bloop_sound') === 'off') return;
+  try {
+    audioCtx ??= new (window.AudioContext || window.webkitAudioContext)();
+    const t = audioCtx.currentTime;
+    for (const [f, dt] of [[660, 0], [880, 0.12]]) {
+      const o = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      o.frequency.value = f;
+      o.type = 'sine';
+      g.gain.setValueAtTime(0.0001, t + dt);
+      g.gain.exponentialRampToValueAtTime(0.12, t + dt + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dt + 0.16);
+      o.connect(g).connect(audioCtx.destination);
+      o.start(t + dt);
+      o.stop(t + dt + 0.2);
+    }
+  } catch { /* звук не критичен */ }
+}
+
+function notifyNewMessage(m) {
+  const chat = chatById(m.chat_id);
+  if (m.sender_id === me.id || !chat) return;
+  const visible = m.chat_id === currentChatId && !document.hidden;
+  if (visible) return;
+  blip();
+  if (localStorage.getItem('bloop_notif') === 'on' && document.hidden
+      && 'Notification' in window && Notification.permission === 'granted') {
+    try {
+      const n = new Notification(`${m.display_name} · ${chatTitleOf(chat)}`, {
+        body: (m.text || (m.media_kind === 'voice' ? 'Голосовое' : 'Вложение')).slice(0, 120),
+        tag: `bloop-${m.chat_id}`,
+      });
+      n.onclick = () => {
+        window.focus();
+        showPage('messages');
+        openChat(m.chat_id);
+        n.close();
+      };
+    } catch { /* не критично */ }
+  }
+}
+
+$('#set-sound')?.addEventListener('change', (e) => {
+  localStorage.setItem('bloop_sound', e.target.checked ? 'on' : 'off');
+  if (e.target.checked) blip(true);
+});
+
+$('#set-browser-notif')?.addEventListener('change', async (e) => {
+  if (e.target.checked) {
+    if ('Notification' in window && Notification.permission !== 'granted') {
+      try { await Notification.requestPermission(); } catch { /* отказ */ }
+    }
+    localStorage.setItem('bloop_notif', 'on');
+    toast('Уведомления включены');
+  } else {
+    localStorage.setItem('bloop_notif', 'off');
+    toast('Уведомления выключены');
+  }
+});
+
+/* ---------- размер текста сообщений ---------- */
+
+function applyFontSize() {
+  const f = localStorage.getItem('bloop_font') || 'normal';
+  document.documentElement.classList.toggle('msg-small', f === 'small');
+  document.documentElement.classList.toggle('msg-large', f === 'large');
+}
+
+function renderFontSeg() {
+  const cur = localStorage.getItem('bloop_font') || 'normal';
+  document.querySelectorAll('#font-seg button').forEach(b =>
+    b.classList.toggle('active', b.dataset.font === cur));
+}
+
+document.querySelectorAll('#font-seg button').forEach(b =>
+  b.addEventListener('click', () => {
+    localStorage.setItem('bloop_font', b.dataset.font);
+    applyFontSize();
+  }));
+applyFontSize();
+
+/* =====================================================================
+   v4: звонки — WebRTC, сигнализация через наш сервер
+   ===================================================================== */
+
+const ICE_SERVERS = [{
+  urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'],
+}];
+
+let call = null; // { id, chatId, peerId, video, role, pc, local, remote, startedAt, timer, muted, camOff }
+
+function updateCallButtons(chat) {
+  const can = !LOCAL_MODE && chat && chat.type === 'direct' && chat.peer && !chat.peer.is_bot;
+  $('#btn-call')?.classList.toggle('hidden', !can);
+  $('#btn-video')?.classList.toggle('hidden', !can);
+}
+
+function setCallStatus(text) {
+  const el = $('#call-status');
+  if (el) el.textContent = text;
+}
+
+function openCallOverlay(peer, video, status) {
+  $('#call-name').textContent = peer?.display_name || '—';
+  setCallStatus(status);
+  $('#call-ava').replaceChildren(avatarEl(peer || { id: 0, display_name: '?' }, false));
+  $('#call-ava').classList.remove('hidden');
+  $('#call-remote-video').classList.add('hidden');
+  $('#call-local-video').classList.add('hidden');
+  $('#call-actions-main').classList.remove('hidden');
+  $('#call-incoming-actions').classList.add('hidden');
+  const t = $('#call-time');
+  t.hidden = true;
+  t.textContent = '0:00';
+  $('#call-cam').classList.toggle('hidden', !video);
+  $('#call-overlay').classList.remove('hidden');
+}
+
+async function getUserMediaSafe(video) {
+  try {
+    return await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true },
+      video: video ? { facingMode: 'user', width: { ideal: 1280 } } : false,
+    });
+  } catch {
+    toast('Нужен доступ к ' + (video ? 'камере и микрофону' : 'микрофону') + ' — разрешите в браузере');
+    return null;
+  }
+}
+
+/* рингтон: короткие двухтональные гудки, пока идёт вызов */
+let ringCtx = null, ringTimer = null;
+function startRing(incoming) {
+  stopRing();
+  try {
+    ringCtx ??= new (window.AudioContext || window.webkitAudioContext)();
+    const pattern = incoming ? [520, 0, 660, 0.18] : [440, 0, 440, 0.3];
+    const beep = (at, freq) => {
+      const o = ringCtx.createOscillator();
+      const g = ringCtx.createGain();
+      o.frequency.value = freq;
+      o.type = 'sine';
+      g.gain.setValueAtTime(0.0001, at);
+      g.gain.exponentialRampToValueAtTime(0.1, at + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.0001, at + 0.15);
+      o.connect(g).connect(ringCtx.destination);
+      o.start(at);
+      o.stop(at + 0.2);
+    };
+    const cycle = () => {
+      const t = ringCtx.currentTime;
+      beep(t + pattern[1], pattern[0]);
+      if (incoming) beep(t + pattern[3], pattern[2]);
+    };
+    cycle();
+    ringTimer = setInterval(cycle, incoming ? 800 : 1200);
+  } catch { /* без звука */ }
+}
+
+function stopRing() {
+  if (ringTimer) { clearInterval(ringTimer); ringTimer = null; }
+}
+
+function createPc() {
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  for (const track of call.local.getTracks()) pc.addTrack(track, call.local);
+  pc.ontrack = (e) => {
+    call.remote = e.streams[0];
+    if (call.video) {
+      const rv = $('#call-remote-video');
+      rv.srcObject = call.remote;
+      rv.classList.remove('hidden');
+      $('#call-ava').classList.add('hidden');
+    } else {
+      $('#call-remote-audio').srcObject = call.remote;
+    }
+  };
+  pc.onicecandidate = (e) => {
+    if (e.candidate && call) socket.emit('call:ice', { call_id: call.id, candidate: e.candidate });
+  };
+  pc.onconnectionstatechange = () => {
+    if (!call) return;
+    if (['connected', 'completed'].includes(pc.connectionState)) {
+      call.startedAt ??= Date.now();
+      stopRing();
+      setCallStatus('Разговор');
+      startCallTimer();
+    }
+    if (['failed', 'closed'].includes(pc.connectionState)) onCallEnded('error');
+  };
+  return pc;
+}
+
+function showLocalVideo() {
+  const lv = $('#call-local-video');
+  lv.srcObject = call.local;
+  lv.classList.remove('hidden');
+}
+
+async function setupPeer(initiator) {
+  call.pc = createPc();
+  if (call.video) showLocalVideo();
+  if (initiator) {
+    const offer = await call.pc.createOffer();
+    await call.pc.setLocalDescription(offer);
+    socket.emit('call:offer', { call_id: call.id, sdp: call.pc.localDescription });
+  }
+}
+
+function startCallTimer() {
+  const t = $('#call-time');
+  t.hidden = false;
+  clearInterval(call.timer);
+  call.timer = setInterval(() => {
+    const s = Math.floor((Date.now() - call.startedAt) / 1000);
+    t.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }, 500);
+}
+
+async function startCall(chatId, video) {
+  if (LOCAL_MODE) return toast('Звонки работают в сетевой версии');
+  if (call) return toast('Уже идёт звонок');
+  if (!socket) return toast('Нет соединения');
+  const chat = chatById(chatId);
+  if (!chat?.peer) return;
+  const local = await getUserMediaSafe(video);
+  if (!local) return;
+  call = { id: null, chatId, peerId: chat.peer.id, video, role: 'caller', pc: null, local, remote: null, startedAt: null, timer: null, muted: false, camOff: false };
+  openCallOverlay(chat.peer, video, 'Вызов…');
+  startRing(false);
+  socket.emit('call:invite', { chat_id: chatId, video });
+}
+
+function onIncomingCall({ call_id, chat_id, video, from }) {
+  if (call) return; // заняты — через 45 с сервер пометит как пропущенный
+  call = { id: call_id, chatId: chat_id, peerId: from.id, video, role: 'callee', pc: null, local: null, remote: null, startedAt: null, timer: null, muted: false, camOff: false };
+  openCallOverlay(from, video, video ? 'Входящий видеозвонок' : 'Входящий звонок');
+  startRing(true);
+  $('#call-actions-main').classList.add('hidden');
+  $('#call-incoming-actions').classList.remove('hidden');
+}
+
+async function acceptCall(withVideo) {
+  if (!call) return;
+  stopRing();
+  const local = await getUserMediaSafe(withVideo || call.video);
+  if (!local) {
+    socket.emit('call:decline', { call_id: call.id });
+    cleanupCall();
+    return;
+  }
+  call.local = local;
+  $('#call-actions-main').classList.remove('hidden');
+  $('#call-incoming-actions').classList.add('hidden');
+  setCallStatus('Соединение…');
+  await setupPeer(false); // ждём оффер от вызывающего
+  socket.emit('call:accept', { call_id: call.id });
+}
+
+async function onCallAccepted() {
+  if (!call) return;
+  stopRing();
+  setCallStatus('Соединение…');
+  await setupPeer(true); // вызывающий создаёт оффер
+}
+
+async function onRemoteOffer(callId, sdp) {
+  if (!call || call.id !== callId || !call.pc) return;
+  await call.pc.setRemoteDescription(sdp);
+  const answer = await call.pc.createAnswer();
+  await call.pc.setLocalDescription(answer);
+  socket.emit('call:answer', { call_id: call.id, sdp: call.pc.localDescription });
+}
+
+async function onRemoteAnswer(callId, sdp) {
+  if (!call || call.id !== callId) return;
+  await call.pc.setRemoteDescription(sdp);
+}
+
+async function onRemoteIce(callId, candidate) {
+  if (!call || call.id !== callId || !candidate) return;
+  try { await call.pc.addIceCandidate(candidate); } catch { /* кандидат придёт позже */ }
+}
+
+function cleanupCall() {
+  if (!call) return;
+  stopRing();
+  clearInterval(call.timer);
+  try { call.pc?.close(); } catch { /* уже закрыт */ }
+  for (const t of call.local?.getTracks() || []) t.stop();
+  call = null;
+  $('#call-overlay').classList.add('hidden');
+}
+
+async function endCall() {
+  if (!call) return;
+  const id = call.id;
+  const active = !!call.startedAt;
+  cleanupCall();
+  if (id && socket) socket.emit('call:end', { call_id: id });
+  if (!active) refreshChats(); // история звонка появится как сообщение
+}
+
+function onCallEnded(reason) {
+  const wasActive = !!call?.startedAt;
+  cleanupCall();
+  if (reason === 'declined') toast('Звонок отклонён');
+  else if (reason === 'timeout') toast('Никто не ответил');
+  else if (reason === 'missed') toast('Пропущенный звонок');
+  else if (reason === 'error') toast('Ошибка соединения');
+  else if (reason === 'disconnect') toast('Собеседник отключился');
+  if (wasActive) refreshChats();
+}
+
+function onCallError(reason) {
+  cleanupCall();
+  const text = {
+    offline: 'Собеседник не в сети',
+    busy: 'Собеседник занят другим звонком',
+    group: 'Звонить можно только в личных чатах',
+    nochat: 'Нет доступа к чату',
+  }[reason] || 'Звонок не состоялся';
+  toast(text);
+}
+
+/* кнопки оверлея звонка */
+$('#btn-call')?.addEventListener('click', () => currentChatId && startCall(currentChatId, false));
+$('#btn-video')?.addEventListener('click', () => currentChatId && startCall(currentChatId, true));
+$('#call-hangup')?.addEventListener('click', () => endCall());
+$('#call-decline')?.addEventListener('click', () => {
+  if (call?.id && socket) socket.emit('call:decline', { call_id: call.id });
+  cleanupCall();
+});
+$('#call-accept-audio')?.addEventListener('click', () => acceptCall(false));
+$('#call-accept-video')?.addEventListener('click', () => acceptCall(true));
+$('#call-mute')?.addEventListener('click', () => {
+  if (!call) return;
+  call.muted = !call.muted;
+  for (const t of call.local.getAudioTracks()) t.enabled = !call.muted;
+  $('#call-mute').classList.toggle('off', call.muted);
+  toast(call.muted ? 'Микрофон выключен' : 'Микрофон включён');
+});
+$('#call-cam')?.addEventListener('click', () => {
+  if (!call) return;
+  call.camOff = !call.camOff;
+  for (const t of call.local.getVideoTracks()) t.enabled = !call.camOff;
+  $('#call-cam').classList.toggle('off', call.camOff);
+  $('#call-local-video').classList.toggle('hidden', call.camOff);
 });

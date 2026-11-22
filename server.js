@@ -12,6 +12,8 @@ import {
   db, getUserById, getUserWithPassword, listUsers,
   createChat, findDirectChat, isMember, chatMemberIds,
   insertMessage, listMessages, listChatsForUser, markRead,
+  editMessage, deleteMessageRow, forwardMessage, searchMessages, searchMessagesAll,
+  setPinnedMessage, setChatPinned, getChatRow, listChatMembers, renameChat, addChatMembers, leaveChat,
   createPost, getPost, listFeed, listUserPosts, deletePost,
   toggleLike, incViews, addComment, listComments, updateProfile, setAvatar,
   listFeedByTag, searchPosts, listTrends, getUserStats,
@@ -33,7 +35,10 @@ import { hashPassword, verifyPassword, signToken, verifyToken, hashEmailCode, ve
 import { deliverEmailCode } from './src/email.js';
 import { upload, checkUploadSize, mediaKind, publicUrl, MAX_VIDEO_BYTES } from './src/media.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// путь приложения: с диска — от файла модуля, в SEA-сборке — от рабочей папки
+const __dirname = import.meta.url
+  ? path.dirname(fileURLToPath(import.meta.url))
+  : process.cwd();
 const DATA_DIR = process.env.BLOOP_DATA_DIR || path.join(process.cwd(), 'data');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
@@ -44,6 +49,33 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 МБ после декодиров
 const app = express();
 const httpServer = createServer(app);
 const io = new Server(httpServer, { maxHttpBufferSize: 12 * 1024 * 1024 });
+
+// v4: в однофайловой сборке (Node SEA) публичные файлы зашиты в экзешник
+let seaGetAsset = null;
+try {
+  const sea = require('node:sea'); // embedder SEA даёт require встроенных модулей
+  if (sea.isSea()) seaGetAsset = sea.getAsset;
+} catch { /* обычный запуск с диска: require не определён в ESM */ }
+
+const PUBLIC_MIME = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json', '.png': 'image/png', '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+  '.webp': 'image/webp', '.gif': 'image/gif', '.mp4': 'video/mp4', '.webm': 'video/webm',
+  '.txt': 'text/plain; charset=utf-8',
+};
+
+app.get(/^\/(?!api\/|uploads\/|socket\.io\/|miniapp\/).*/, (req, res, next) => {
+  if (!seaGetAsset) return next(); // дисковый режим — дальше express.static
+  const rel = req.path === '/' ? 'public/index.html' : `public${req.path}`;
+  try {
+    const buf = Buffer.from(seaGetAsset(rel));
+    res.type(PUBLIC_MIME[path.extname(rel)] || 'application/octet-stream').send(buf);
+  } catch {
+    next();
+  }
+});
 
 app.use(express.json({ limit: '16mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -319,6 +351,116 @@ api.post('/chats/:id/read', (req, res) => {
   const chatId = Number(req.params.id);
   if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
   markRead(chatId, req.user.id, Number(req.body?.message_id) || 0);
+  res.json({ ok: true });
+});
+
+/* ---------- v6: правка, удаление, пересылка, поиск, закрепы, группы ---------- */
+
+api.get('/chats/:id/members', (req, res) => {
+  const chatId = Number(req.params.id);
+  if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
+  res.json({ members: listChatMembers(chatId), chat: getChatRow(chatId) });
+});
+
+api.post('/chats/:id/group', (req, res) => {
+  const chatId = Number(req.params.id);
+  const row = getChatRow(chatId);
+  if (!row || row.type !== 'group') return fail(res, 400, 'Это не группа');
+  if (row.created_by !== req.user.id) return fail(res, 403, 'Переименовать может только создатель');
+  let name;
+  try { name = renameChat(chatId, req.body?.name); } catch (e) { return fail(res, 400, e.message); }
+  io.to(`chat:${chatId}`).emit('chat:updated', { chat_id: chatId, name });
+  res.json({ ok: true, name });
+});
+
+api.post('/chats/:id/members', (req, res) => {
+  const chatId = Number(req.params.id);
+  const row = getChatRow(chatId);
+  if (!row || row.type !== 'group') return fail(res, 400, 'Это не группа');
+  if (row.created_by !== req.user.id) return fail(res, 403, 'Добавлять может только создатель');
+  const ids = [...new Set((req.body?.user_ids || []).map(Number))].filter(id => id && getUserById(id));
+  if (!ids.length) return fail(res, 400, 'Некого добавлять');
+  const added = addChatMembers(chatId, ids);
+  emitChatNew(chatId, ids);
+  io.to(`chat:${chatId}`).emit('chat:updated', { chat_id: chatId, members: true });
+  res.json({ ok: true, added });
+});
+
+api.post('/chats/:id/leave', (req, res) => {
+  const chatId = Number(req.params.id);
+  const row = getChatRow(chatId);
+  if (!row || row.type !== 'group') return fail(res, 400, 'Это не группа');
+  if (row.created_by === req.user.id) return fail(res, 400, 'Создатель не может выйти из группы');
+  if (!leaveChat(chatId, req.user.id)) return fail(res, 404, 'Вы не участник');
+  io.to(`chat:${chatId}`).emit('chat:updated', { chat_id: chatId, members: true });
+  res.json({ ok: true });
+});
+
+api.get('/chats/:id/search', (req, res) => {
+  const chatId = Number(req.params.id);
+  if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
+  res.json({ messages: searchMessages(chatId, String(req.query.q || ''), Math.min(50, Number(req.query.limit) || 30)) });
+});
+
+api.get('/search/messages', (req, res) => {
+  res.json({ messages: searchMessagesAll(req.user.id, String(req.query.q || '')) });
+});
+
+api.post('/chats/:id/messages/:mid/edit', (req, res) => {
+  const chatId = Number(req.params.id);
+  if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
+  const msg = editMessage(Number(req.params.mid), req.user.id, String(req.body?.text || ''));
+  if (!msg) return fail(res, 404, 'Сообщение не найдено или не ваше');
+  io.to(`chat:${chatId}`).emit('message:update', { chat_id: chatId, message: msg });
+  res.json({ message: msg });
+});
+
+api.post('/chats/:id/messages/:mid/delete', (req, res) => {
+  const chatId = Number(req.params.id);
+  if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
+  const mid = Number(req.params.mid);
+  const msg = deleteMessageRow(mid, req.user.id);
+  if (!msg) return fail(res, 404, 'Сообщение не найдено или не ваше');
+  io.to(`chat:${chatId}`).emit('message:update', { chat_id: chatId, message: msg });
+  // если удалили закреплённое — снимаем закрепление
+  const row = getChatRow(chatId);
+  if (row?.pinned_message_id === mid) {
+    setPinnedMessage(chatId, null);
+    io.to(`chat:${chatId}`).emit('chat:updated', { chat_id: chatId, pinned_message: null });
+  }
+  res.json({ message: msg });
+});
+
+api.post('/chats/:id/messages/:mid/forward', (req, res) => {
+  const chatId = Number(req.params.id);
+  if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
+  const targets = [...new Set((req.body?.chat_ids || []).map(Number))].slice(0, 10);
+  if (!targets.length) return fail(res, 400, 'Выберите чаты');
+  const out = [];
+  for (const to of targets) {
+    if (!isMember(to, req.user.id) || to === chatId) continue;
+    const msg = forwardMessage(Number(req.params.mid), to, req.user.id);
+    if (!msg) continue;
+    io.to(`chat:${to}`).emit('message', msg);
+    out.push(msg);
+  }
+  if (!out.length) return fail(res, 400, 'Никуда не переслано');
+  res.json({ messages: out });
+});
+
+api.post('/chats/:id/pin', (req, res) => {
+  const chatId = Number(req.params.id);
+  if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
+  const pinned = setPinnedMessage(chatId, req.body?.message_id);
+  if (req.body?.message_id && !pinned) return fail(res, 404, 'Сообщение не найдено');
+  io.to(`chat:${chatId}`).emit('chat:updated', { chat_id: chatId, pinned_message: pinned });
+  res.json({ pinned_message: pinned });
+});
+
+api.post('/chats/:id/pin-chat', (req, res) => {
+  const chatId = Number(req.params.id);
+  if (!isMember(chatId, req.user.id)) return fail(res, 403, 'Нет доступа к чату');
+  setChatPinned(chatId, req.user.id, !!req.body?.pinned);
   res.json({ ok: true });
 });
 
@@ -925,6 +1067,17 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 // ---------- Socket.IO: realtime ----------
 
 const presence = new Map(); // userId -> Set(socketId)
+const calls = new Map();    // call_id -> { caller, callee, chatId, video, state, startedAt }
+
+// запись о звонке в историю чата (видна обоим)
+function emitCallHistory(chatId, callerId, text) {
+  try {
+    const msg = insertMessage(chatId, callerId, text, null, 'call');
+    io.to(`chat:${chatId}`).emit('message', msg);
+  } catch (e) {
+    console.error('история звонка не записана:', e.message);
+  }
+}
 
 function joinUserRooms(socket) {
   const ids = db.prepare('SELECT chat_id FROM chat_members WHERE user_id = ?').all(socket.userId);
@@ -956,11 +1109,102 @@ io.on('connection', (socket) => {
     socket.to(`chat:${chatId}`).emit('typing', { chat_id: chatId, user_id: userId, typing: !!typing });
   });
 
+  /* ---------- звонки (v4): WebRTC, сигнализация через наш сервер ---------- */
+
+  socket.on('call:invite', ({ chat_id, video } = {}) => {
+    const chatId = Number(chat_id);
+    if (!isMember(chatId, userId)) return socket.emit('call:error', { reason: 'nochat' });
+    const row = getChatRow(chatId);
+    if (!row || row.type !== 'direct') return socket.emit('call:error', { reason: 'group' });
+    const ids = chatMemberIds(chatId);
+    const peerId = ids.find(x => x !== userId);
+    if (!peerId) return socket.emit('call:error', { reason: 'nopeer' });
+    if (!presence.has(peerId)) return socket.emit('call:error', { reason: 'offline' });
+    for (const c of calls.values()) {
+      if (c.state !== 'ended' && [c.caller, c.callee].includes(peerId)) {
+        return socket.emit('call:error', { reason: 'busy' });
+      }
+    }
+    const callId = `c${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    calls.set(callId, { caller: userId, callee: peerId, chatId, video: !!video, state: 'ringing', startedAt: null });
+    io.in(`user:${peerId}`).emit('call:incoming', {
+      call_id: callId, chat_id: chatId, video: !!video,
+      from: publicUser(getUserById(userId)),
+    });
+    socket.emit('call:ringing', { call_id: callId });
+    // 45 секунд без ответа — пропущенный звонок
+    setTimeout(() => {
+      const c = calls.get(callId);
+      if (!c || c.state !== 'ringing') return;
+      calls.delete(callId);
+      io.in(`user:${userId}`).emit('call:ended', { call_id: callId, reason: 'timeout' });
+      io.in(`user:${peerId}`).emit('call:ended', { call_id: callId, reason: 'missed' });
+      emitCallHistory(chatId, userId, '📞 Пропущенный звонок');
+    }, 45000);
+  });
+
+  socket.on('call:accept', ({ call_id } = {}) => {
+    const c = calls.get(String(call_id || ''));
+    if (!c || c.callee !== userId || c.state !== 'ringing') return;
+    c.state = 'active';
+    c.startedAt = Date.now();
+    io.in(`user:${c.caller}`).emit('call:accepted', { call_id: c.call_id ?? call_id });
+    io.in(`user:${c.callee}`).emit('call:accepted', { call_id });
+  });
+
+  socket.on('call:decline', ({ call_id } = {}) => {
+    const c = calls.get(String(call_id || ''));
+    if (!c || c.callee !== userId) return;
+    calls.delete(call_id);
+    io.in(`user:${c.caller}`).emit('call:ended', { call_id, reason: 'declined' });
+    io.in(`user:${c.callee}`).emit('call:ended', { call_id, reason: 'declined' });
+    emitCallHistory(c.chatId, c.caller, '📞 Звонок (отклонён)');
+  });
+
+  // ретрансляция SDP и ICE-кандидатов строго между участниками вызова
+  const relay = (event) => ({ call_id, ...payload } = {}) => {
+    const c = calls.get(String(call_id || ''));
+    if (!c || c.state === 'ended') return;
+    if (![c.caller, c.callee].includes(userId)) return;
+    const other = userId === c.caller ? c.callee : c.caller;
+    io.in(`user:${other}`).emit(event, { call_id, ...payload });
+  };
+  socket.on('call:offer', relay('call:offer'));
+  socket.on('call:answer', relay('call:answer'));
+  socket.on('call:ice', relay('call:ice'));
+
+  socket.on('call:end', ({ call_id, reason } = {}) => {
+    const c = calls.get(String(call_id || ''));
+    if (!c) return;
+    calls.delete(call_id);
+    const secs = c.startedAt ? Math.round((Date.now() - c.startedAt) / 1000) : 0;
+    io.in(`user:${c.caller}`).emit('call:ended', { call_id, reason: reason || 'hangup' });
+    io.in(`user:${c.callee}`).emit('call:ended', { call_id, reason: reason || 'hangup' });
+    // состоявшийся разговор пишем в историю всегда, даже короче секунды
+    if (c.startedAt) {
+      const icon = c.video ? '📹' : '📞';
+      const mm = Math.floor(secs / 60), ss = String(secs % 60).padStart(2, '0');
+      emitCallHistory(c.chatId, c.caller, `${icon} Звонок · ${mm}:${ss}`);
+    }
+  });
+
   socket.on('disconnect', () => {
     sockets.delete(socket.id);
     if (sockets.size === 0) {
       presence.delete(userId);
       io.emit('presence', { user_id: userId, online: false });
+    }
+    // обрываем активные вызовы с этим пользователем
+    for (const [id, c] of calls) {
+      if (![c.caller, c.callee].includes(userId) || c.state === 'ended') continue;
+      calls.delete(id);
+      const other = userId === c.caller ? c.callee : c.caller;
+      io.in(`user:${other}`).emit('call:ended', { call_id: id, reason: 'disconnect' });
+      if (c.state === 'active' && c.startedAt) {
+        const secs = Math.round((Date.now() - c.startedAt) / 1000);
+        const mm = Math.floor(secs / 60), ss = String(secs % 60).padStart(2, '0');
+        emitCallHistory(c.chatId, c.caller, `📞 Звонок · ${mm}:${ss}`);
+      }
     }
   });
 });

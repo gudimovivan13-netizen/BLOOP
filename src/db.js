@@ -62,6 +62,12 @@ CREATE TABLE IF NOT EXISTS phone_codes (
   expires   INTEGER NOT NULL,
   attempts  INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS telegram_links (
+  phone     TEXT PRIMARY KEY,
+  chat_id   INTEGER NOT NULL,
+  linked_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `);
 
 const msgCols = db.prepare('PRAGMA table_info(messages)').all().map(c => c.name);
@@ -103,6 +109,17 @@ export function bumpPhoneAttempts(phone) {
 
 export function deletePhoneCode(phone) {
   db.prepare('DELETE FROM phone_codes WHERE phone = ?').run(phone);
+}
+
+export function saveTelegramLink(phone, chatId) {
+  db.prepare(`
+    INSERT INTO telegram_links (phone, chat_id) VALUES (?, ?)
+    ON CONFLICT(phone) DO UPDATE SET chat_id = excluded.chat_id
+  `).run(phone, chatId);
+}
+
+export function getTelegramLink(phone) {
+  return db.prepare('SELECT * FROM telegram_links WHERE phone = ?').get(phone) || null;
 }
 
 export function listUsers() {

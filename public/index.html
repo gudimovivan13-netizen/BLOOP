@@ -121,7 +121,7 @@
             <div id="stories-bar" class="stories-bar"></div>
             <div class="feed-head hidden" id="feed-head">
               <h3 id="feed-title"></h3>
-              <button id="feed-clear" class="ghost-btn">← Вернуться в ленту</button>
+              <button id="feed-clear" class="ghost-btn"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14.5 5.5L8 12l6.5 6.5" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Вернуться в ленту</span></button>
             </div>
             <div class="composer-card" id="composer-card">
               <span id="composer-avatar" class="avatar"></span>
@@ -129,13 +129,13 @@
                 <textarea id="post-text" rows="2" placeholder="Что нового?"></textarea>
                 <div id="composer-media" class="composer-media hidden"></div>
                 <div id="poll-builder" class="poll-builder hidden">
-                  <div class="pb-head">📊 Опрос <button type="button" id="poll-remove" class="icon-btn" title="Убрать опрос">✕</button></div>
+                  <div class="pb-head"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="12" width="3.4" height="7" rx="1" fill="currentColor"/><rect x="10.3" y="8" width="3.4" height="11" rx="1" fill="currentColor"/><rect x="15.6" y="4.5" width="3.4" height="14.5" rx="1" fill="currentColor"/></svg><span>Опрос</span> <button type="button" id="poll-remove" class="icon-btn" title="Убрать опрос"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button></div>
                   <div id="poll-options-box"></div>
                   <button type="button" id="poll-add" class="ghost-btn">+ вариант</button>
                 </div>
                 <div id="viral-meter" class="viral-meter hidden">
                   <div class="vm-head">
-                    <span class="vm-title">🔥 Вирусометр Floop</span>
+                    <span class="vm-title"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.4c1 2.7 4.6 4.5 4.6 8.2a4.6 4.6 0 0 1-9.2 0c0-1.7.7-3 1.6-4.2.3 1.1.9 1.9 1.7 2.3-.4-2.2.2-4.4 1.3-6.3z" fill="#ff8a5c"/></svg><span>Вирусометр Floop</span></span>
                     <span id="vm-score" class="vm-score">—</span>
                   </div>
                   <div class="vm-bar"><div id="vm-fill" class="vm-fill"></div></div>
@@ -146,7 +146,7 @@
                     Изображение
                     <input id="post-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
                   </label>
-                  <button id="btn-poll" class="ghost-btn" type="button">📊 Опрос</button>
+                  <button id="btn-poll" class="ghost-btn" type="button"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="12" width="3.4" height="7" rx="1" fill="currentColor"/><rect x="10.3" y="8" width="3.4" height="11" rx="1" fill="currentColor"/><rect x="15.6" y="4.5" width="3.4" height="14.5" rx="1" fill="currentColor"/></svg><span>Опрос</span></button>
                   <button id="post-submit" class="primary">Опубликовать</button>
                 </div>
               </div>
@@ -229,7 +229,7 @@
                   <div class="rb-author" id="reply-author"></div>
                   <div class="rb-text" id="reply-text"></div>
                 </div>
-                <button id="reply-cancel" class="icon-btn" title="Не отвечать">✕</button>
+                <button id="reply-cancel" class="icon-btn" title="Не отвечать"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
               </div>
 
               <footer class="composer">
@@ -310,7 +310,7 @@
           <input id="upload-file" type="file" accept="video/mp4,video/webm,video/quicktime" hidden>
           <span id="upload-file-label">Выберите видеофайл (MP4, WebM, MOV, до 300 МБ)</span>
         </label>
-        <button id="upload-record" class="record-btn">🎬 Снять рилс в приложении</button>
+        <button id="upload-record" class="record-btn"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="10" width="15" height="8" rx="1.6" fill="currentColor"/><path d="M5.2 9.2L18.9 6.4l.6 2.8-13.7 2.8z" fill="currentColor"/></svg><span>Снять рилс в приложении</span></button>
       </div>
       <textarea id="upload-caption" rows="2" placeholder="Описание…" maxlength="4000"></textarea>
       <div id="upload-status" class="upload-status"></div>
@@ -325,9 +325,9 @@
   <div id="camera-modal" class="modal hidden camera-modal">
     <div class="camera-card">
       <header class="camera-head">
-        <span class="camera-title">🎬 Съёмка рилса</span>
+        <span class="camera-title"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="10" width="15" height="8" rx="1.6" fill="currentColor"/><path d="M5.2 9.2L18.9 6.4l.6 2.8-13.7 2.8z" fill="currentColor"/></svg><span>Съёмка рилса</span></span>
         <span id="cam-timer" class="cam-timer hidden">0:00 / 1:00</span>
-        <button id="camera-close" class="icon-btn" title="Закрыть">✕</button>
+        <button id="camera-close" class="icon-btn" title="Закрыть"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
       </header>
       <div class="cam-stage">
         <video id="cam-preview" autoplay muted playsinline></video>
@@ -335,7 +335,7 @@
         <div class="cam-hint" id="cam-hint">Разрешите доступ к камере и микрофону</div>
       </div>
       <div class="cam-actions">
-        <button id="cam-flip" class="ghost-btn" title="Переключить камеру">🔄 Камера</button>
+        <button id="cam-flip" class="ghost-btn" title="Переключить камеру"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.5 12a6.5 6.5 0 1 1-1.9-4.6" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round"/><path d="M17.3 3.6l-.5 4 4-.6" stroke="currentColor" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Камера</span></button>
         <button id="cam-record" class="rec-btn" title="Запись"><span class="rec-circle"></span></button>
         <button id="cam-publish" class="primary hidden">Публиковать</button>
       </div>
@@ -345,7 +345,7 @@
   <!-- Модальное окно просмотра видео -->
   <div id="video-modal" class="modal hidden">
     <div class="video-card">
-      <button id="video-close" class="icon-btn video-close" title="Закрыть">✕</button>
+      <button id="video-close" class="icon-btn video-close" title="Закрыть"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
       <video id="video-player" controls playsinline></video>
       <div id="video-info" class="video-info"></div>
     </div>
@@ -356,7 +356,7 @@
     <div class="comments-card">
       <header class="comments-head">
         <h3>Комментарии <span id="comments-count"></span></h3>
-        <button id="comments-close" class="icon-btn" title="Закрыть">✕</button>
+        <button id="comments-close" class="icon-btn" title="Закрыть"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
       </header>
       <div id="comments-list" class="comments-list"></div>
       <footer class="comments-input">
@@ -394,7 +394,7 @@
       <header class="comments-head">
         <h3>Уведомления</h3>
         <button id="notif-read-all" class="ghost-btn">Прочитать всё</button>
-        <button id="notif-close" class="icon-btn" title="Закрыть">✕</button>
+        <button id="notif-close" class="icon-btn" title="Закрыть"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
       </header>
       <div id="notif-list" class="comments-list"><div class="empty-note">Загрузка…</div></div>
     </div>
@@ -406,7 +406,7 @@
       <header class="comments-head">
         <h3><span class="floop-badge"><svg viewBox="0 0 48 48" width="26" height="26"><rect width="48" height="48" rx="14" fill="#8f6cff"/><circle cx="19" cy="24" r="8" fill="#fff"/><circle cx="30" cy="24" r="8" fill="#2e2a4d"/><circle cx="19" cy="24" r="3.2" fill="#2e2a4d"/><circle cx="30" cy="24" r="3.2" fill="#8f6cff"/><path d="M24 10l2.4 4.6 4.6-2.4-2.4 4.6z" fill="#ffd166"/></svg></span>Floop — помощник</h3>
         <button id="ai-clear" class="ghost-btn" title="Очистить диалог">Очистить</button>
-        <button id="ai-close" class="icon-btn" title="Закрыть">✕</button>
+        <button id="ai-close" class="icon-btn" title="Закрыть"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
       </header>
       <div id="ai-list" class="comments-list ai-list"><div class="empty-note">Загрузка…</div></div>
       <div id="ai-chips" class="ai-chips"></div>
@@ -422,12 +422,12 @@
   <!-- Модальное окно настроек оформления -->
   <div id="settings-modal" class="modal hidden">
     <div class="modal-card settings-card">
-      <h3>⚙️ Оформление</h3>
+      <h3><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M12 3.5v2.6M12 17.9v2.6M20.5 12h-2.6M6.1 12H3.5M18 6l-1.8 1.8M7.8 16.2L6 18M18 18l-1.8-1.8M7.8 7.8L6 6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Оформление</span></h3>
       <div class="set-label">Тема</div>
       <div class="theme-seg" id="theme-seg">
-        <button type="button" data-theme="dark">🌙 Тёмная</button>
-        <button type="button" data-theme="light">☀️ Светлая</button>
-        <button type="button" data-theme="auto">🌗 Авто</button>
+        <button type="button" data-theme="dark"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M19.6 14.3A8 8 0 0 1 9.7 4.4 8 8 0 1 0 19.6 14.3z" fill="currentColor"/></svg><span>Тёмная</span></button>
+        <button type="button" data-theme="light"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><path d="M12 3.5v2M12 18.5v2M20.5 12h-2M5.5 12h-2M18 6l-1.4 1.4M7.4 16.6L6 18M18 18l-1.4-1.4M7.4 7.4L6 6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg><span>Светлая</span></button>
+        <button type="button" data-theme="auto"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.7" fill="none"/><path d="M12 4.5a7.5 7.5 0 0 1 0 15z" fill="currentColor"/></svg><span>Авто</span></button>
       </div>
       <div class="set-hint">«Авто» следует за системной темой телефона или компьютера.</div>
       <div class="set-label">Акцентный цвет</div>
@@ -448,8 +448,8 @@
           <span id="story-avatar" class="avatar small"></span>
           <b id="story-name"></b>
           <span id="story-time" class="story-time"></span>
-          <button id="story-del" class="icon-btn hidden" title="Удалить">🗑</button>
-          <button id="story-close" class="icon-btn" title="Закрыть">✕</button>
+          <button id="story-del" class="icon-btn hidden" title="Удалить"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 7h13M9.5 7V5.6c0-.6.5-1.1 1.1-1.1h2.8c.6 0 1.1.5 1.1 1.1V7M7 7l.8 11.3c.1.7.6 1.2 1.3 1.2h5.8c.7 0 1.2-.5 1.3-1.2L17 7" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg></button>
+          <button id="story-close" class="icon-btn" title="Закрыть"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
         </div>
       </header>
       <div class="story-stage" id="story-stage">
@@ -457,7 +457,7 @@
         <button class="story-nav next" id="story-next" title="Дальше">›</button>
       </div>
       <footer class="story-foot">
-        <span id="story-views" class="story-views hidden">👁 0</span>
+        <span id="story-views" class="story-views hidden"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 12S6.5 6.5 12 6.5 20.5 12 20.5 12 17.5 17.5 12 17.5 3.5 12 3.5 12z" stroke="currentColor" stroke-width="1.7" fill="none"/><circle cx="12" cy="12" r="2.4" fill="currentColor"/></svg><b id="story-views-n">0</b></span>
       </footer>
     </div>
   </div>
@@ -465,7 +465,7 @@
   <!-- Модальное окно создания мгновения -->
   <div id="story-create-modal" class="modal hidden">
     <div class="modal-card story-create-card">
-      <h3>✨ Новое мгновение</h3>
+      <h3><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l1.9 5.6 5.6 1.9-5.6 1.9L12 18.5l-1.9-5.6-5.6-1.9 5.6-1.9z" fill="currentColor"/></svg><span>Новое мгновение</span></h3>
       <div class="story-tabs">
         <button type="button" id="stc-tab-text" class="tab active">Текст</button>
         <button type="button" id="stc-tab-photo" class="tab">Фото</button>
@@ -496,6 +496,7 @@
   <script src="/config.js"></script>
   <script src="/local-server.js"></script>
   <script src="/socket.io/socket.io.js"></script>
+  <script src="/icons.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

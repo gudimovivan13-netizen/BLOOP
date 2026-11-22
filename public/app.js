@@ -103,7 +103,7 @@ function verifiedMark(u) {
   const el = document.createElement('span');
   el.className = 'verified-mark';
   el.title = 'Аккаунт с подтверждённой почтой';
-  el.textContent = '✔';
+  el.innerHTML = BLOOP_ICONS.I.seal;
   return el;
 }
 
@@ -268,11 +268,11 @@ async function emailStart() {
     // Подсказка по каналу доставки кода
     if (data.local_code) {
       // Локальная доставка: в офлайн-приложении SMTP нет — код сразу в тосте
-      toast(`📡 Почта BLOOP: код ${data.local_code}`, 15000);
+      toast(`Почта BLOOP: код ${data.local_code}`, 15000);
     } else if (data.delivery === 'smtp') {
-      toast(`✉️ Письмо с кодом отправлено на ${email}`, 8000);
+      toast(`Письмо с кодом отправлено на ${email}`, 8000);
     } else {
-      toast('📧 Код отправлен — он виден в консоли сервера (настройте SMTP, см. README)', 8000);
+      toast('Код отправлен — он виден в консоли сервера (настройте SMTP, см. README)', 8000);
     }
   } catch (err) {
     authFail(err.message);
@@ -295,7 +295,7 @@ $('#email-form').addEventListener('submit', async (e) => {
     });
     localStorage.setItem('bloop_token', data.token);
     clearInterval(emailState.timer);
-    toast(data.created ? '🎉 Аккаунт создан — почта подтверждена!' : '👋 С возвращением!');
+    toast(data.created ? 'Аккаунт создан — почта подтверждена!' : 'С возвращением!');
     enterApp(data.user);
   } catch (err) {
     authFail(err.message);
@@ -541,7 +541,11 @@ function msgEl(m) {
     qa.textContent = m.reply.mine ? 'Вы' : m.reply.author;
     const qt = document.createElement('div');
     qt.className = 'rq-text';
-    qt.textContent = m.reply.image && !m.reply.text ? (m.reply.kind === 'voice' ? '🎤 Голосовое' : '🖼 Изображение') : m.reply.text;
+    if (m.reply.image && !m.reply.text) {
+      qt.innerHTML = m.reply.kind === 'voice' ? BLOOP_ICONS.I.mic + '<span>Голосовое</span>' : BLOOP_ICONS.I.image + '<span>Изображение</span>';
+    } else {
+      qt.textContent = m.reply.text;
+    }
     q.append(qa, qt);
     el.appendChild(q);
   }
@@ -572,7 +576,7 @@ function msgEl(m) {
     for (const [emoji, count] of Object.entries(m.reactions)) {
       const chip = document.createElement('button');
       chip.className = 'rx-chip small' + ((m.mine || []).includes(emoji) ? ' mine' : '');
-      chip.textContent = `${emoji} ${count}`;
+      chip.innerHTML = BLOOP_ICONS.rxIconHTML(emoji) + '<b>' + count + '</b>';
       chip.addEventListener('click', () => reactMessageUI(m, emoji));
       chips.appendChild(chip);
     }
@@ -609,13 +613,13 @@ function openMsgMenu(m, el, rect) {
   pop.className = 'msg-pop';
   const replyBtn = document.createElement('button');
   replyBtn.className = 'ghost-btn';
-  replyBtn.textContent = '↩ Ответить';
+  replyBtn.innerHTML = BLOOP_ICONS.I.reply + '<span>Ответить</span>';
   replyBtn.addEventListener('click', () => { pop.remove(); setReply(m); });
   const rxRow = document.createElement('div');
   rxRow.className = 'msg-pop-rx';
   for (const emoji of ['❤️', '🔥', '😂', '😮', '👍', '😢']) {
     const b = document.createElement('button');
-    b.textContent = emoji;
+    b.innerHTML = BLOOP_ICONS.rxIconHTML(emoji);
     b.addEventListener('click', () => { pop.remove(); reactMessageUI(m, emoji); });
     rxRow.appendChild(b);
   }
@@ -651,9 +655,12 @@ function setReply(m) {
   replyToMessage = m;
   const bar = $('#reply-bar');
   $('#reply-author').textContent = m.sender_id === me.id ? 'Ответ себе' : m.display_name;
-  $('#reply-text').textContent = m.image && !m.text
-    ? (m.media_kind === 'voice' ? '🎤 Голосовое' : '🖼 Изображение')
-    : m.text;
+  const replyMeta = $('#reply-text');
+  if (m.image && !m.text) {
+    replyMeta.innerHTML = m.media_kind === 'voice' ? BLOOP_ICONS.I.mic + '<span>Голосовое</span>' : BLOOP_ICONS.I.image + '<span>Изображение</span>';
+  } else {
+    replyMeta.textContent = m.text;
+  }
   bar.classList.remove('hidden');
   input.focus();
 }
@@ -671,7 +678,7 @@ function voiceBubble(m) {
   wrap.className = 'voice-bubble';
   const play = document.createElement('button');
   play.className = 'vb-play';
-  play.textContent = '▶';
+  play.innerHTML = BLOOP_ICONS.I.play;
   const wave = document.createElement('div');
   wave.className = 'vb-wave';
   for (let i = 0; i < 22; i++) {
@@ -691,8 +698,8 @@ function voiceBubble(m) {
     document.querySelectorAll('.voice-bubble audio').forEach(a => a.pause());
     audio.play();
   });
-  audio.onplay = () => { playing = true; play.textContent = '⏸'; };
-  audio.onpause = () => { playing = false; play.textContent = '▶'; audio.currentTime = 0; };
+  audio.onplay = () => { playing = true; play.innerHTML = BLOOP_ICONS.I.pause; };
+  audio.onpause = () => { playing = false; play.innerHTML = BLOOP_ICONS.I.play; audio.currentTime = 0; };
   audio.ontimeupdate = () => {
     const p = audio.duration ? audio.currentTime / audio.duration : 0;
     wave.style.setProperty('--vb-progress', `${Math.round(p * 100)}%`);
@@ -784,7 +791,8 @@ function showImageChip(name) {
   const chip = document.createElement('div');
   chip.id = 'img-chip';
   chip.className = 'ghost-btn';
-  chip.textContent = `Изображение: ${name} ✕`;
+  chip.append(`Изображение: ${name} `);
+  chip.insertAdjacentHTML('beforeend', BLOOP_ICONS.I.close);
   chip.title = 'Нажмите, чтобы убрать';
   chip.addEventListener('click', clearPendingImage);
   document.querySelector('.composer').prepend(chip);
@@ -1088,7 +1096,7 @@ async function connectSocket() {
       videosPosts.unshift(post);
       renderVideos();
     }
-    const what = post.type === 'clip' ? 'новый клип 🎬' : post.type === 'video' ? 'новое видео 📹' : 'новый пост ✍️';
+    const what = post.type === 'clip' ? 'новый клип' : post.type === 'video' ? 'новое видео' : 'новый пост';
     toast(`${post.author.display_name}: ${what}`, () => showPage('feed'));
   });
 
@@ -1145,8 +1153,8 @@ async function connectSocket() {
     if (notification.user_id !== me.id) return; // адресность (важно в локальном режиме)
     setNotifBadge(unread);
     const text = notification.type === 'like'
-      ? `❤️ ${notification.actor_name} лайкнул(а) вашу публикацию`
-      : `💬 ${notification.actor_name} прокомментировал(а)`;
+      ? `${notification.actor_name} лайкнул(а) вашу публикацию`
+      : `${notification.actor_name} прокомментировал(а)`;
     toast(text, () => openNotifications());
   });
 }
@@ -1414,7 +1422,8 @@ function renderViralMeter() {
   for (const a of advice) {
     const row = document.createElement('div');
     row.className = 'vm-tip';
-    row.textContent = (a === advice[0] && (advice[0].startsWith('Добавь') || advice[0].startsWith('Задай') || advice[0].startsWith('Слишком') || advice[0].startsWith('Больше') || advice[0].startsWith('КАПС') || advice[0].startsWith('Много')) ? '💡 ' : '✅ ') + a;
+    const tipIcon = (a === advice[0] && (advice[0].startsWith('Добавь') || advice[0].startsWith('Задай') || advice[0].startsWith('Слишком') || advice[0].startsWith('Больше') || advice[0].startsWith('КАПС') || advice[0].startsWith('Много'))) ? BLOOP_ICONS.I.bulb : BLOOP_ICONS.I.check;
+    row.innerHTML = tipIcon + '<span>' + a + '</span>';
     tips.appendChild(row);
   }
 }
@@ -1427,9 +1436,9 @@ function pulseBadge(p) {
   if (ageH > 48 || !p.views) return null;
   const engagement = (p.likes || 0) + 2 * (p.comments_count || 0);
   const perHour = engagement / Math.max(ageH, 0.5);
-  if (perHour >= 1.5 && p.views >= 5) return { cls: 'hot', label: '🔥 Горит' };
-  if (perHour >= 0.5) return { cls: 'warm', label: '📈 Набирает обороты' };
-  if (perHour >= 0.2 && p.views >= 3) return { cls: 'fresh', label: '🌱 Растёт' };
+  if (perHour >= 1.5 && p.views >= 5) return { cls: 'hot', icon: 'flame', label: 'Горит' };
+  if (perHour >= 0.5) return { cls: 'warm', icon: 'trend', label: 'Набирает обороты' };
+  if (perHour >= 0.2 && p.views >= 3) return { cls: 'fresh', icon: 'sprout', label: 'Растёт' };
   return null;
 }
 
@@ -1483,7 +1492,7 @@ function postCardEl(p) {
     const badge = document.createElement('span');
     badge.className = `pulse-badge ${pulse.cls}`;
     badge.title = 'Пульс публикации по Вирусометру Floop';
-    badge.textContent = pulse.label;
+    badge.innerHTML = BLOOP_ICONS.I[pulse.icon] + '<span>' + pulse.label + '</span>';
     head.appendChild(badge);
   }
 
@@ -1643,7 +1652,7 @@ function pollBlock(p) {
   }
   const total = document.createElement('div');
   total.className = 'poll-total';
-  total.textContent = `📊 ${poll.total} ${poll.total === 1 ? 'голос' : 'голосов'}`;
+  total.innerHTML = BLOOP_ICONS.I.chart + '<span>' + poll.total + ' ' + (poll.total === 1 ? 'голос' : 'голосов') + '</span>';
   box.appendChild(total);
   return box;
 }
@@ -1658,7 +1667,7 @@ function reactionChips(p) {
       if (!count) continue;
       const chip = document.createElement('button');
       chip.className = 'rx-chip' + ((p.my_reactions || []).includes(emoji) ? ' mine' : '');
-      chip.innerHTML = `<span class="rx-e">${emoji}</span><span class="rx-n">${formatCount(count)}</span>`;
+      chip.innerHTML = `<span class="rx-e">${BLOOP_ICONS.rxIconHTML(emoji)}</span><span class="rx-n">${formatCount(count)}</span>`;
       chip.addEventListener('click', () => reactPostUI(p, emoji, chip.closest('.post-card')));
       wrap.appendChild(chip);
     }
@@ -1707,7 +1716,7 @@ function openReactBar(p, anchor) {
   pop.className = 'react-pop';
   for (const emoji of ['❤️', '🔥', '😂', '😮', '😢', '👍', '🤯', '💚']) {
     const b = document.createElement('button');
-    b.textContent = emoji;
+    b.innerHTML = BLOOP_ICONS.rxIconHTML(emoji);
     b.addEventListener('click', () => { pop.remove(); reactPostUI(p, emoji, null); });
     pop.appendChild(b);
   }
@@ -2203,7 +2212,7 @@ $('#cam-publish').addEventListener('click', () => {
   $('#upload-file').value = '';
   closeCamera();
   $('#upload-modal').classList.remove('hidden');
-  toast('🎬 Рилс снят! Добавь описание и публикуй');
+  toast('Рилс снят! Добавь описание и публикуй');
 });
 
 /* =====================================================================
@@ -2301,7 +2310,7 @@ function renderProfile() {
   if (user.id === me.id) {
     const ai = document.createElement('button');
     ai.className = 'ai-open-btn';
-    ai.textContent = '🤖 Floop — нейропомощник';
+    ai.innerHTML = '<img src="img/floop.png" alt="" class="floop-ava"><span>Floop — нейропомощник</span>';
     ai.title = 'Задать вопрос умному помощнику';
     ai.addEventListener('click', openAiModal);
     actions.appendChild(ai);
@@ -2314,7 +2323,7 @@ function renderProfile() {
 
     const theme = document.createElement('button');
     theme.className = 'ghost-btn';
-    theme.textContent = '🎨 Оформление';
+    theme.innerHTML = BLOOP_ICONS.I.palette + '<span>Оформление</span>';
     theme.addEventListener('click', openSettings);
     actions.appendChild(theme);
   } else {
@@ -2608,7 +2617,7 @@ function aiBubble(role, text) {
   } else {
     const av = document.createElement('span');
     av.className = 'avatar small ai-avatar';
-    av.textContent = '🤖';
+    av.innerHTML = '<img src="img/floop.png" alt="Floop">';
     row.appendChild(av);
   }
   const bubble = document.createElement('div');
@@ -2623,7 +2632,7 @@ function renderAiList() {
   list.replaceChildren();
   if (aiHistory.length === 0) {
     list.appendChild(aiBubble('assistant',
-      'Привет! Я Floop — умный помощник BLOOP 🤖\nСпроси что угодно: придумать пост, подпись к клипу, подобрать хэштеги или просто поболтать.'));
+      'Привет! Я Floop — умный помощник BLOOP.\nСпроси что угодно: придумать пост, подпись к клипу, подобрать хэштеги или просто поболтать.'));
     return;
   }
   for (const m of aiHistory) list.appendChild(aiBubble(m.role, m.content));
@@ -2878,7 +2887,7 @@ function renderStoriesBar() {
   myAv.querySelector('.dot').remove();
   const plus = document.createElement('span');
   plus.className = 'story-plus';
-  plus.textContent = mine ? '✨' : '+';
+  plus.innerHTML = mine ? BLOOP_ICONS.I.sparkle : '+';
   myCell.append(myAv, plus);
   const myLabel = document.createElement('span');
   myLabel.className = 'story-label';
@@ -2982,7 +2991,7 @@ function showStory() {
     s.views = views;
     s.viewed_by_me = true;
     const v = $('#story-views');
-    v.textContent = `👁 ${views}`;
+    $('#story-views-n').textContent = views;
     v.classList.toggle('hidden', group.user.id !== me.id);
   }).catch(() => {});
 
@@ -3091,7 +3100,7 @@ $('#stc-publish').addEventListener('click', async () => {
       await api('/api/stories', { method: 'POST', body: { kind: 'image', image: dataUrl, text: $('#stc-caption').value.trim() } });
     }
     $('#story-create-modal').classList.add('hidden');
-    toast('✨ Мгновение выложено — исчезнет через 24 часа');
+    toast('Мгновение выложено — исчезнет через 24 часа');
     loadStories();
   } catch (err) {
     $('#stc-status').textContent = err.message;
@@ -3111,7 +3120,7 @@ async function renderBadgesInto(container, userId) {
     const block = document.createElement('div');
     block.className = 'side-block badges-block';
     const h = document.createElement('h4');
-    h.textContent = '🏆 Заслуги';
+    h.innerHTML = BLOOP_ICONS.I.trophy + '<span>Заслуги</span>';
     block.appendChild(h);
     const grid = document.createElement('div');
     grid.className = 'badges-grid';
@@ -3120,7 +3129,7 @@ async function renderBadgesInto(container, userId) {
       cell.className = 'badge-cell' + (b.unlocked ? ' unlocked' : '');
       const icon = document.createElement('div');
       icon.className = 'bd-icon';
-      icon.textContent = b.icon;
+      icon.innerHTML = BLOOP_ICONS.BICONS[b.key] || '';
       const title = document.createElement('div');
       title.className = 'bd-title';
       title.textContent = b.title;
@@ -3129,7 +3138,12 @@ async function renderBadgesInto(container, userId) {
       desc.textContent = b.desc;
       const prog = document.createElement('div');
       prog.className = 'bd-prog';
-      prog.textContent = b.unlocked ? '✅ получено' : `${b.progress[0]}/${b.progress[1]}`;
+      if (b.unlocked) {
+        prog.innerHTML = BLOOP_ICONS.I.check + '<span>получено</span>';
+        prog.classList.add('done');
+      } else {
+        prog.textContent = `${b.progress[0]}/${b.progress[1]}`;
+      }
       cell.append(icon, title, desc, prog);
       grid.appendChild(cell);
     }

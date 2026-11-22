@@ -2006,3 +2006,55 @@ html.lite .auth-card, html.lite .video-card, html.lite .reply-bar,
 html.lite .toasts .toast, html.lite .react-pop, html.lite .msg-pop {
   background: var(--glass-fallback);
 }
+
+/* ---------- иконки вместо эмодзи (icons.js) ---------- */
+.micon { display: inline-block; width: 16px; height: 16px; vertical-align: -3px; }
+.ticon, .oicon { display: block; width: 100%; height: 100%; }
+.micon + span, .floop-ava + span { margin-left: 7px; }
+.icon-btn .micon { width: 18px; height: 18px; margin: 0; vertical-align: middle; }
+.ghost-btn .micon, .primary .micon, .record-btn .micon { vertical-align: -3px; }
+.vm-title .micon { width: 15px; height: 15px; }
+.vm-title { display: inline-flex; align-items: center; }
+.pulse-badge { display: inline-flex; align-items: center; gap: 5px; }
+.pulse-badge .micon { width: 13px; height: 13px; margin: 0; }
+.vm-tip { display: flex; align-items: flex-start; gap: 6px; }
+.vm-tip .micon { width: 14px; height: 14px; margin-top: 2px; flex: 0 0 auto; }
+.vm-tip span { display: block; flex: 1; }
+.badge-cell .bd-icon { font-size: inherit; width: 40px; height: 40px; }
+.badges-block h4 { display: flex; align-items: center; gap: 8px; }
+.badges-block h4 .ticon { width: 22px; height: 22px; }
+.bd-prog.done { display: flex; align-items: center; gap: 5px; color: #2bb673; font-weight: 600; }
+.bd-prog.done .micon { width: 13px; height: 13px; }
+.rx-chip { display: inline-flex; align-items: center; gap: 5px; }
+.rx-chip .oicon { width: 17px; height: 17px; }
+.rx-chip b { font-weight: 600; }
+.msg-rx .rx-chip .oicon { width: 14px; height: 14px; }
+.react-pop button .oicon, .msg-pop-rx button .oicon { width: 26px; height: 26px; }
+.poll-total { display: inline-flex; align-items: center; gap: 6px; }
+.poll-total .micon { width: 14px; height: 14px; color: var(--accent); }
+.story-plus .micon { width: 15px; height: 15px; }
+.ai-open-btn { display: inline-flex; align-items: center; }
+.ai-open-btn .floop-ava { width: 24px; height: 24px; border-radius: 50%; object-fit: cover; }
+.ai-avatar { overflow: hidden; }
+.ai-avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; }
+.vb-play .micon { width: 18px; height: 18px; margin: 0; vertical-align: middle; }
+.rq-text .micon, #reply-text .micon { width: 13px; height: 13px; }
+#img-chip .micon { width: 13px; height: 13px; vertical-align: -2px; margin-left: 6px; }
+.verified-mark { display: inline-flex; vertical-align: middle; }
+.verified-mark .micon { width: 14px; height: 14px; vertical-align: -2px; }
+.story-views { display: inline-flex; align-items: center; gap: 5px; }
+.story-views .micon { width: 14px; height: 14px; }
+.camera-title, .pb-head { display: inline-flex; align-items: center; }
+
+/* плитки-аватарки внутри кнопок и заголовков — фиксированный размер */
+button .ticon { width: 18px; height: 18px; flex: 0 0 auto; }
+h3 .ticon { width: 20px; height: 20px; flex: 0 0 auto; }
+.vm-title .ticon { width: 16px; height: 16px; }
+.camera-title .ticon { width: 16px; height: 16px; }
+.pb-head .ticon { width: 16px; height: 16px; }
+button .ticon + span, h3 .ticon + span, .vm-title .ticon + span,
+.camera-title .ticon + span, .pb-head .ticon + span { margin-left: 7px; }
+button .ticon, h3 .ticon, .vm-title .ticon, .camera-title .ticon, .pb-head .ticon {
+  display: inline-block;
+  vertical-align: -4px;
+}

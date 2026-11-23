@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Сборка BLOOP-4.2.exe — десктоп-приложение Windows (Electron + встроенный сервер).
+# Сборка BLOOP-4.3.exe — десктоп-приложение Windows (Electron + встроенный сервер).
 # Требуется: Node.js >= 22.5, npm, python3 с Pillow (для иконки).
 # Запускать из корня репозитория: bash scripts/build_exe.sh
 set -euo pipefail
@@ -33,11 +33,11 @@ print('icon.ico создан')
 PY
 fi
 
-# 4. Инструменты и сборка portable-exe (BLOOP-4.2.exe, окно Electron).
+# 4. Инструменты и сборка portable-exe (BLOOP-4.3.exe, окно Electron).
 cd "$DESK"
 if [ ! -d node_modules ]; then
   ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install --no-audit --no-fund
 fi
 npx electron-builder --win portable
 
-echo "Готово: $DESK/dist/BLOOP-4.2.exe"
+echo "Готово: $DESK/dist/BLOOP-4.3.exe"

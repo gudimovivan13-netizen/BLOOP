@@ -32,6 +32,7 @@ import {
 import { hashPassword, verifyPassword, signToken, verifyToken, hashEmailCode, verifyEmailCode } from './src/auth.js';
 import { deliverEmailCode } from './src/email.js';
 import { createBloopAI } from './src/ai/engine.js';
+import { createBloopLLM } from './src/ai/llm.js';
 import { upload, checkUploadSize, mediaKind, publicUrl, MAX_VIDEO_BYTES } from './src/media.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -631,6 +632,34 @@ api.post('/me/avatar', upload.single('file'), (req, res) => {
 
 const bloopAI = createBloopAI();
 
+// Языковая модель (GPT, ~1 млн параметров): веса читаются из public/vendor
+// один раз при первом запросе. Если файла нет (например, лёгкая сборка) —
+// работаем на классификаторе намерений.
+let _llm = null;
+let _llmTried = false;
+function getBloopLLM() {
+  if (_llmTried) return _llm;
+  _llmTried = true;
+  // пути: корень репо (server.js), копия ресурсов exe (server-bundle рядом с public)
+  const candidates = [
+    path.join(__dirname, 'public', 'vendor', 'bloop-llm.json'),
+    path.join(__dirname, '..', 'public', 'vendor', 'bloop-llm.json'),
+    path.join(__dirname, '..', '..', 'public', 'vendor', 'bloop-llm.json'),
+  ];
+  for (const file of candidates) {
+    try {
+      if (!fs.existsSync(file)) continue;
+      _llm = createBloopLLM(JSON.parse(fs.readFileSync(file, 'utf8')));
+      console.log('BLOOP AI: языковая модель загружена (' + path.basename(path.dirname(path.dirname(file))) + ')');
+      break;
+    } catch (err) {
+      _llm = null;
+    }
+  }
+  if (!_llm) console.log('BLOOP AI: веса LLM не найдены, только классификатор');
+  return _llm;
+}
+
 function aiContext(userId) {
   try {
     const posts = listUserPosts(userId, userId, { limit: 40 });
@@ -657,6 +686,15 @@ api.post('/assistant', (req, res) => {
   })).filter(m => m.content);
   if (history.length === 0) return fail(res, 400, 'Нет сообщений');
   const lastUser = [...history].reverse().find(m => m.role === 'user');
+  // 1) языковая модель (настоящий трансформер) — если веса на месте;
+  const llm = getBloopLLM();
+  if (llm) {
+    const reply = llm.chat(lastUser?.content || '', history.slice(-6));
+    if (reply) {
+      return res.json({ reply, source: 'ai-neural', intent: 'llm', model: 'bloop-gpt-1' });
+    }
+  }
+  // 2) классификатор намерений + генераторы — запасной путь
   const { reply, intent, confidence } = bloopAI.answer(lastUser?.content || '', aiContext(req.user.id));
   res.json({ reply, source: 'ai', intent, confidence: Math.round(confidence * 100) / 100 });
 });
@@ -928,6 +966,31 @@ io.on('connection', (socket) => {
     const chatId = Number(chat_id);
     if (!isMember(chatId, userId)) return;
     socket.to(`chat:${chatId}`).emit('typing', { chat_id: chatId, user_id: userId, typing: !!typing });
+  });
+
+  // ---------- Звонки 1-на-1: сигналинг WebRTC ----------
+  // Адресат получает событие в своей личной комнате user:<id>.
+  socket.on('call:invite', ({ to, call_id, mode } = {}) => {
+    const toId = Number(to);
+    if (!toId || toId === userId || !getUserById(toId)) return;
+    if (!['audio', 'video'].includes(mode)) return;
+    io.to(`user:${toId}`).emit('call:incoming', {
+      call_id: String(call_id || ''), mode,
+      from: publicUser(getUserById(userId)),
+    });
+  });
+  socket.on('call:accept', ({ to, call_id } = {}) => {
+    io.to(`user:${Number(to)}`).emit('call:accepted', { call_id: String(call_id || '') });
+  });
+  socket.on('call:decline', ({ to, call_id, busy } = {}) => {
+    io.to(`user:${Number(to)}`).emit('call:declined', { call_id: String(call_id || ''), busy: !!busy });
+  });
+  socket.on('call:end', ({ to, call_id } = {}) => {
+    io.to(`user:${Number(to)}`).emit('call:ended', { call_id: String(call_id || '') });
+  });
+  socket.on('call:signal', ({ to, call_id, data } = {}) => {
+    if (!data || typeof data !== 'object') return;
+    io.to(`user:${Number(to)}`).emit('call:signal', { call_id: String(call_id || ''), data });
   });
 
   socket.on('disconnect', () => {

@@ -6,3 +6,9 @@ data-test/
 *.log
 .DS_Store
 dist/
+
+# LLM: данные и чекпойнты не коммитятся (веса идут в public/vendor/bloop-llm.json)
+scripts/llm/data/
+scripts/llm/weights.npz
+scripts/llm/*.out
+scripts/llm/__pycache__/

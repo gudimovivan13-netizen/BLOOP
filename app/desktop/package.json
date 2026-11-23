@@ -1,7 +1,7 @@
 {
   "name": "bloop-desktop",
   "productName": "BLOOP",
-  "version": "4.2.0",
+  "version": "4.3.0",
   "description": "BLOOP — десктоп-приложение: окно Electron + встроенный сервер мессенджера",
   "main": "main.js",
   "private": true,
@@ -38,7 +38,7 @@
       "signAndEditExecutable": false
     },
     "portable": {
-      "artifactName": "BLOOP-4.2.exe"
+      "artifactName": "BLOOP-4.3.exe"
     }
   }
 }

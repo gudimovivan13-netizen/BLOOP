@@ -953,9 +953,36 @@
     return ctx;
   }
 
+  /* Языковая модель (GPT) для офлайна: веса подгружаются один раз в фоне,
+     инференс — прямо на устройстве. */
+  let bloopLlm = null;
+  let bloopLlmTried = false;
+  function getBloopLlm() {
+    if (bloopLlmTried) return bloopLlm;
+    bloopLlmTried = true;
+    try {
+      fetch('/vendor/bloop-llm.json')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data && window.BLOOP_AI_LLM) {
+            bloopLlm = window.BLOOP_AI_LLM.createBloopLLM(data);
+          }
+        })
+        .catch(() => { /* останется классификатор */ });
+    } catch { /* без модели */ }
+    return bloopLlm;
+  }
+
   route('POST', /^\/api\/assistant$/, ({ body }) => {
     const history = Array.isArray(body?.messages) ? body.messages.slice(-20) : [];
     const last = [...history].reverse().find(m => m?.role === 'user');
+    const llm = getBloopLlm();
+    if (llm) {
+      try {
+        const reply = llm.chat(last?.content || '', history.slice(-6));
+        if (reply) return { reply, source: 'ai-neural' };
+      } catch { /* ниже классификатор */ }
+    }
     if (window.BLOOP_AI) {
       try {
         const inst = window.BLOOP_AI.inst || (window.BLOOP_AI.inst = window.BLOOP_AI.createBloopAI());

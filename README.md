@@ -181,8 +181,8 @@ electron-builder portable; детали в `app/desktop/`).
 ## Android APK — автономный режим без сервера
 
 Готовый APK последней версии лежит рядом с exe в папке
-[releases/](releases/) — `BLOOP-4.0.apk`; собранный Actions-ом появится
-в артефактах workflow «Android APK».
+[releases/](releases/) — `BLOOP-4.2.apk` (versionCode 12) с нейросетью
+офлайн внутри.
 
 BLOOP собирается в Android-приложение (Capacitor). В APK работает
 **локальный режим**: весь «сервер» — виртуальный, прямо на устройстве

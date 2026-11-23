@@ -1,0 +1,44 @@
+{
+  "name": "bloop-desktop",
+  "productName": "BLOOP",
+  "version": "4.1.0",
+  "description": "BLOOP — десктоп-приложение: окно Electron + встроенный сервер мессенджера",
+  "main": "main.js",
+  "private": true,
+  "author": "BLOOP",
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "scripts": {
+    "dist": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "net.bloop.desktop",
+    "productName": "BLOOP",
+    "compression": "maximum",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "package.json",
+      "afterpack.js"
+    ],
+    "afterPack": "afterpack.js",
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "signAndEditExecutable": false
+    },
+    "portable": {
+      "artifactName": "BLOOP-4.1.exe"
+    }
+  }
+}

@@ -48,7 +48,7 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 МБ после декодиров
 
 const app = express();
 const httpServer = createServer(app);
-const io = new Server(httpServer, { maxHttpBufferSize: 12 * 1024 * 1024 });
+const io = new Server(httpServer, { serveClient: false, maxHttpBufferSize: 12 * 1024 * 1024 });
 
 // v4: в однофайловой сборке (Node SEA) публичные файлы зашиты в экзешник
 let seaGetAsset = null;

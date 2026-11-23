@@ -224,28 +224,11 @@
                   <div id="chat-name"></div>
                   <div id="chat-status" class="chat-status"></div>
                 </div>
-                <button id="btn-search" class="icon-btn" title="Поиск по чату"><svg viewBox="0 0 24 24" width="20" height="20"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m15.5 15.5 4.5 4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-                <button id="btn-call" class="icon-btn hidden" title="Аудиозвонок"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M6.6 2.8c.5-.5 1.3-.4 1.8.1l3 3.4c.4.5.4 1.3 0 1.8l-1.2 1.3a1 1 0 0 0-.1 1.2 13 13 0 0 0 3.3 3.3c.4.3.9.2 1.2-.1l1.3-1.2c.5-.4 1.3-.4 1.8 0l3.4 3c.5.5.6 1.3.1 1.8l-1.6 1.8c-.8.9-2 1.2-3.1.9-2.7-.8-5.4-2.4-7.8-4.8S4.6 11.2 3.8 8.5c-.3-1.1 0-2.3.9-3.1z"/></svg></button>
-                <button id="btn-video" class="icon-btn hidden" title="Видеозвонок"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M4 6.5A2.5 2.5 0 0 1 6.5 4h7A2.5 2.5 0 0 1 16 6.5v11a2.5 2.5 0 0 1-2.5 2.5h-7A2.5 2.5 0 0 1 4 17.5zm14 3.2 3.6-2.4c.7-.5 1.6 0 1.6.8v7.8c0 .9-.9 1.3-1.6.8L18 13.9z"/></svg></button>
                 <button id="chat-miniapp" class="ghost-btn hidden">Мини-апп</button>
               </header>
 
-              <div id="search-panel" class="search-panel hidden">
-                <div class="sp-row">
-                  <input id="search-input" type="text" placeholder="Поиск по сообщениям чата…" autocomplete="off">
-                  <button id="search-close" class="icon-btn" title="Закрыть"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
-                </div>
-                <div id="search-results" class="sp-results"></div>
-              </div>
-
               <div id="messages" class="messages"></div>
               <div id="typing-bar" class="typing-bar hidden">печатает…</div>
-
-              <div id="pinned-bar" class="pinned-bar hidden">
-                <span class="pb-ic">📌</span>
-                <div class="pb-body"><div class="pb-author" id="pin-author"></div><div class="pb-msg" id="pin-text"></div></div>
-                <button id="pin-unpin" class="icon-btn" title="Открепить"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
-              </div>
 
               <div id="reply-bar" class="reply-bar hidden">
                 <div class="rb-quote">
@@ -255,16 +238,7 @@
                 <button id="reply-cancel" class="icon-btn" title="Не отвечать"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
               </div>
 
-              <div id="edit-bar" class="reply-bar hidden">
-                <div class="rb-quote">
-                  <div class="rb-author">Редактирование</div>
-                  <div class="rb-text">Изменения увидят все участники чата</div>
-                </div>
-                <button id="edit-cancel" class="icon-btn" title="Отменить"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
-              </div>
-
               <footer class="composer">
-                <button id="btn-emoji" class="icon-btn" title="Эмодзи"><svg viewBox="0 0 24 24" width="20" height="20"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="9" cy="10" r="1.3" fill="currentColor"/><circle cx="15" cy="10" r="1.3" fill="currentColor"/><path d="M8.5 14.2a4.4 4.4 0 0 0 7 0" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>
                 <label class="icon-btn attach" title="Прикрепить изображение">
                   <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M21 6.8 17.2 3a3.6 3.6 0 0 0-5.1 0l-9 9a5.2 5.2 0 0 0 7.3 7.3l8.3-8.3-1.4-1.4-8.3 8.3a3.2 3.2 0 0 1-4.5-4.5l9-9a1.6 1.6 0 0 1 2.3 2.3l-8.3 8.3a.8.8 0 0 1-1.1-1.1l7.6-7.6L12.6 3 5 10.6a2.8 2.8 0 0 0 4 4l8.3-8.4z"/></svg>
                   <input id="file-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
@@ -284,8 +258,6 @@
                   <button id="voice-stop" class="primary">Отправить</button>
                 </div>
               </footer>
-
-              <div id="emoji-panel" class="emoji-panel hidden"></div>
             </div>
           </main>
         </div>
@@ -438,7 +410,7 @@
   <div id="ai-modal" class="modal hidden">
     <div class="comments-card ai-card">
       <header class="comments-head">
-        <h3><span class="floop-badge"><svg viewBox="0 0 48 48" width="26" height="26"><rect width="48" height="48" rx="14" fill="#8f6cff"/><circle cx="19" cy="24" r="8" fill="#fff"/><circle cx="30" cy="24" r="8" fill="#2e2a4d"/><circle cx="19" cy="24" r="3.2" fill="#2e2a4d"/><circle cx="30" cy="24" r="3.2" fill="#8f6cff"/><path d="M24 10l2.4 4.6 4.6-2.4-2.4 4.6z" fill="#ffd166"/></svg></span>Floop — помощник</h3>
+        <h3><span class="floop-badge"><svg viewBox="0 0 48 48" width="26" height="26"><rect width="48" height="48" rx="14" fill="#8f6cff"/><circle cx="19" cy="24" r="8" fill="#fff"/><circle cx="30" cy="24" r="8" fill="#2e2a4d"/><circle cx="19" cy="24" r="3.2" fill="#2e2a4d"/><circle cx="30" cy="24" r="3.2" fill="#8f6cff"/><path d="M24 10l2.4 4.6 4.6-2.4-2.4 4.6z" fill="#ffd166"/></svg></span>BLOOP AI — нейросеть</h3>
         <button id="ai-clear" class="ghost-btn" title="Очистить диалог">Очистить</button>
         <button id="ai-close" class="icon-btn" title="Закрыть"><svg class="micon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
       </header>
@@ -467,15 +439,6 @@
       <div class="set-label">Акцентный цвет</div>
       <div class="accent-row" id="accent-row"></div>
       <div class="set-hint">Цвет подсвечивает кнопки, ссылки и стеклянные переливы интерфейса.</div>
-      <div class="set-label">Звук и уведомления</div>
-      <label class="ci-pin-row"><input id="set-sound" type="checkbox"> Звук новых сообщений</label>
-      <label class="ci-pin-row"><input id="set-browser-notif" type="checkbox"> Уведомления браузера, когда вкладка свернута</label>
-      <div class="set-label">Размер текста сообщений</div>
-      <div class="theme-seg" id="font-seg">
-        <button type="button" data-font="small"><span>Мелкий</span></button>
-        <button type="button" data-font="normal"><span>Обычный</span></button>
-        <button type="button" data-font="large"><span>Крупный</span></button>
-      </div>
       <div class="modal-actions">
         <button id="settings-close" class="primary">Готово</button>
       </div>
@@ -632,66 +595,11 @@
   <div id="toasts" class="toasts"></div>
 
   <script src="/config.js"></script>
+  <script src="/vendor/bloop-ai.js"></script>
   <script src="/local-server.js"></script>
-  <script src="/vendor/socket.io.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
   <script src="/icons.js"></script>
   <script src="/bot-templates.js"></script>
   <script type="module" src="/app.js"></script>
-  <!-- v4: полноэкранный звонок -->
-  <div id="call-overlay" class="call-overlay hidden">
-    <div class="call-card">
-      <video id="call-remote-video" class="call-remote-video hidden" autoplay playsinline></video>
-      <audio id="call-remote-audio" autoplay></audio>
-      <div class="call-ava" id="call-ava"></div>
-      <video id="call-local-video" class="call-local-video hidden" autoplay playsinline muted></video>
-      <div class="call-name" id="call-name">—</div>
-      <div class="call-status" id="call-status">Вызов…</div>
-      <div class="call-time" id="call-time">0:00</div>
-      <div class="call-actions" id="call-actions-main">
-        <button id="call-mute" class="call-btn" title="Микрофон вкл/выкл">🎙</button>
-        <button id="call-cam" class="call-btn hidden" title="Камера вкл/выкл">📷</button>
-        <button id="call-hangup" class="call-btn danger" title="Завершить">✕</button>
-      </div>
-      <div class="call-actions hidden" id="call-incoming-actions">
-        <button id="call-decline" class="call-btn danger" title="Отклонить">✕</button>
-        <button id="call-accept-audio" class="call-btn accept" title="Ответить">🎙</button>
-        <button id="call-accept-video" class="call-btn accept" title="Ответить с видео">📹</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- v4: пересылка сообщения -->
-  <div id="forward-modal" class="modal hidden">
-    <div class="modal-card">
-      <h3><span>Переслать сообщение</span></h3>
-      <div id="forward-list" class="forward-list"></div>
-      <div class="modal-actions">
-        <button id="forward-cancel" class="ghost-btn">Отмена</button>
-        <button id="forward-go" class="primary">Отправить</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- v4: информация о чате / управление группой -->
-  <div id="chatinfo-modal" class="modal hidden">
-    <div class="modal-card">
-      <h3><span id="ci-title">Чат</span></h3>
-      <div id="ci-rename-row" class="ci-row hidden">
-        <input id="ci-name" type="text" maxlength="60" placeholder="Название группы">
-        <button id="ci-rename-save" class="ghost-btn">Сохранить</button>
-      </div>
-      <div id="ci-add-row" class="ci-row hidden">
-        <select id="ci-user"></select>
-        <button id="ci-add" class="ghost-btn">Добавить</button>
-      </div>
-      <div id="ci-members" class="ci-members"></div>
-      <label class="ci-pin-row"><input id="ci-pinned" type="checkbox"> Закреплённый чат (сверху списка)</label>
-      <div class="modal-actions">
-        <button id="ci-leave" class="ghost-btn hidden">Выйти из группы</button>
-        <button id="ci-close" class="primary">Готово</button>
-      </div>
-    </div>
-  </div>
-
 </body>
 </html>

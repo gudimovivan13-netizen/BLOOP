@@ -209,17 +209,8 @@
       image: m.image, media_kind: m.media_kind || 'image', created_at: m.created_at,
       username: u?.username || '', display_name: u?.display_name || '',
       kb: m.kb || null,
-      edited_at: m.edited_at || null,
-      forwarded_from: m.forwarded_from || null,
       ...msgReactionsOf(m.id, uid),
     };
-    if (m.deleted) {
-      out.deleted = true;
-      out.text = '';
-      out.image = null;
-      out.kb = null;
-      return out;
-    }
     if (m.reply_to) {
       const r = db.messages.find(x => x.id === m.reply_to);
       if (r) {
@@ -324,32 +315,16 @@
         created_at: last.created_at,
         display_name: db.users.find(u => u.id === last.sender_id)?.display_name || '',
       } : null;
-      const pmid = chat.pinned_message_id || null;
       out.push({
         id: chat.id, type: chat.type, name: chat.name || null, peer,
         members_count: db.members.filter(x => x.chat_id === chat.id).length,
         last_message: lastOut,
         unread,
         updated_at: last ? last.created_at : chat.created_at,
-        pinned: !!mem.pinned,
-        pinned_message_id: pmid,
-        pinned_message: pmid ? (localMsgOut(db.messages.find(x => x.id === pmid), uid)) : null,
       });
     }
-    out.sort((a, b) => (b.pinned - a.pinned) || ((b.last_message?.id ?? 0) - (a.last_message?.id ?? 0)) || b.id - a.id);
+    out.sort((a, b) => (b.last_message?.id ?? 0) - (a.last_message?.id ?? 0) || b.id - a.id);
     return out;
-  }
-
-  // закреплённое сообщение из списка чатов (без реакций — не нужны в плашке)
-  function localMsgOut(m, uid) {
-    if (!m) return null;
-    const u = db.users.find(x => x.id === m.sender_id);
-    return {
-      id: m.id, chat_id: m.chat_id, sender_id: m.sender_id, text: m.text,
-      image: m.image, media_kind: m.media_kind || 'image', created_at: m.created_at,
-      username: u?.username || '', display_name: u?.display_name || '',
-      deleted: !!m.deleted,
-    };
   }
 
   /* ---------- шина realtime-событий ---------- */
@@ -589,172 +564,6 @@
     const maxId = Math.max(0, ...db.messages.filter(x => x.chat_id === chatId).map(x => x.id));
     if (mem) mem.last_read_message_id = maxId;
     save();
-    return { ok: true };
-  });
-
-  /* ---------- v4: правка/удаление/пересылка/поиск/закрепы/группы ---------- */
-
-  route('POST', /^\/api\/chats\/(\d+)\/messages\/(\d+)\/edit$/, ({ me, params, body }) => {
-    me = requireUser(me);
-    const chatId = Number(params[0]);
-    if (!isMember(chatId, me.id)) fail(403, 'Нет доступа к чату');
-    const m = db.messages.find(x => x.id === Number(params[1]));
-    if (!m || m.sender_id !== me.id || m.deleted) fail(404, 'Сообщение не найдено или не ваше');
-    const text = String(body?.text || '').trim().slice(0, 4000);
-    if (!text) fail(400, 'Текст пуст');
-    m.text = text;
-    m.edited_at = now();
-    save();
-    const out = msgOut(m, me.id);
-    emit('message:update', { chat_id: chatId, message: rewrite(out) });
-    return { message: rewrite(out) };
-  });
-
-  route('POST', /^\/api\/chats\/(\d+)\/messages\/(\d+)\/delete$/, ({ me, params }) => {
-    me = requireUser(me);
-    const chatId = Number(params[0]);
-    if (!isMember(chatId, me.id)) fail(403, 'Нет доступа к чату');
-    const m = db.messages.find(x => x.id === Number(params[1]));
-    if (!m || m.sender_id !== me.id || m.deleted) fail(404, 'Сообщение не найдено или не ваше');
-    m.deleted = 1;
-    m.text = '';
-    m.image = null;
-    m.kb = null;
-    m.media_kind = 'image';
-    save();
-    const out = msgOut(m, me.id);
-    emit('message:update', { chat_id: chatId, message: rewrite(out) });
-    const chat = db.chats.find(c => c.id === chatId);
-    if (chat?.pinned_message_id === m.id) {
-      chat.pinned_message_id = null;
-      save();
-      emit('chat:updated', { chat_id: chatId, pinned_message: null });
-    }
-    return { message: rewrite(out) };
-  });
-
-  route('POST', /^\/api\/chats\/(\d+)\/messages\/(\d+)\/forward$/, ({ me, params, body }) => {
-    me = requireUser(me);
-    const chatId = Number(params[0]);
-    if (!isMember(chatId, me.id)) fail(403, 'Нет доступа к чату');
-    const src = db.messages.find(x => x.id === Number(params[1]));
-    if (!src || src.deleted) fail(404, 'Сообщение не найдено');
-    const targets = [...new Set((body?.chat_ids || []).map(Number))].slice(0, 10);
-    if (!targets.length) fail(400, 'Выберите чаты');
-    const out = [];
-    const srcAuthor = db.users.find(u => u.id === src.sender_id)?.display_name || '';
-    for (const to of targets) {
-      if (!isMember(to, me.id) || to === chatId) continue;
-      const kind = src.media_kind === 'call' ? 'image' : (src.media_kind || 'image');
-      const msg = {
-        id: next('msg'), chat_id: to, sender_id: me.id,
-        text: src.text || '', image: src.image, media_kind: kind,
-        reply_to: null, kb: null, forwarded_from: srcAuthor, created_at: now(),
-      };
-      db.messages.push(msg);
-      save();
-      const o = msgOut(msg, me.id);
-      emit('message', rewrite(o));
-      out.push(rewrite(o));
-    }
-    if (!out.length) fail(400, 'Никуда не переслано');
-    return { messages: out };
-  });
-
-  route('GET', /^\/api\/chats\/(\d+)\/search$/, ({ me, params, query }) => {
-    const chatId = Number(params[0]);
-    if (!isMember(chatId, requireUser(me).id)) fail(403, 'Нет доступа к чату');
-    const t = String(query.q || '').trim().slice(0, 120);
-    if (t.length < 2) return { messages: [] };
-    const vars = [...new Set([t, t.toLowerCase(), t.toUpperCase()])];
-    const limit = Math.min(50, Number(query.limit) || 30);
-    const msgs = db.messages
-      .filter(x => x.chat_id === chatId && !x.deleted && x.text
-        && vars.some(v => x.text.includes(v)))
-      .sort((a, b) => b.id - a.id)
-      .slice(0, limit);
-    return { messages: msgs.map(m => msgOut(m, requireUser(me).id)) };
-  });
-
-  route('POST', /^\/api\/chats\/(\d+)\/pin$/, ({ me, params, body }) => {
-    me = requireUser(me);
-    const chatId = Number(params[0]);
-    if (!isMember(chatId, me.id)) fail(403, 'Нет доступа к чату');
-    const mid = Number(body?.message_id) || null;
-    if (mid && !db.messages.some(x => x.id === mid && x.chat_id === chatId && !x.deleted)) fail(404, 'Сообщение не найдено');
-    const chat = db.chats.find(c => c.id === chatId);
-    chat.pinned_message_id = mid;
-    save();
-    const pm = mid ? localMsgOut(db.messages.find(x => x.id === mid), me.id) : null;
-    emit('chat:updated', { chat_id: chatId, pinned_message: pm ? rewrite(pm) : null });
-    return { pinned_message: pm ? rewrite(pm) : null };
-  });
-
-  route('POST', /^\/api\/chats\/(\d+)\/pin-chat$/, ({ me, params, body }) => {
-    me = requireUser(me);
-    const chatId = Number(params[0]);
-    if (!isMember(chatId, me.id)) fail(403, 'Нет доступа к чату');
-    const mem = db.members.find(m => m.chat_id === chatId && m.user_id === me.id);
-    if (mem) mem.pinned = body?.pinned ? 1 : 0;
-    save();
-    return { ok: true };
-  });
-
-  route('GET', /^\/api\/chats\/(\d+)\/members$/, ({ me, params }) => {
-    const chatId = Number(params[0]);
-    if (!isMember(chatId, requireUser(me).id)) fail(403, 'Нет доступа к чату');
-    const chat = db.chats.find(c => c.id === chatId);
-    const members = db.members.filter(m => m.chat_id === chatId).map(m => {
-      const u = db.users.find(x => x.id === m.user_id);
-      return u ? { id: u.id, username: u.username, display_name: u.display_name, avatar: u.avatar, is_bot: !!u.is_bot, role: chat?.created_by === u.id ? 'owner' : 'member' } : null;
-    }).filter(Boolean);
-    return { members, chat: chat ? { id: chat.id, type: chat.type, name: chat.name, created_by: chat.created_by } : null };
-  });
-
-  route('POST', /^\/api\/chats\/(\d+)\/group$/, ({ me, params, body }) => {
-    me = requireUser(me);
-    const chatId = Number(params[0]);
-    const chat = db.chats.find(c => c.id === chatId);
-    if (!chat || chat.type !== 'group') fail(400, 'Это не группа');
-    if (chat.created_by !== me.id) fail(403, 'Переименовать может только создатель');
-    const title = String(body?.name || '').trim().slice(0, 60);
-    if (!title) fail(400, 'Название пустое');
-    chat.name = title;
-    save();
-    emit('chat:updated', { chat_id: chatId, name: title });
-    return { ok: true, name: title };
-  });
-
-  route('POST', /^\/api\/chats\/(\d+)\/members$/, ({ me, params, body }) => {
-    me = requireUser(me);
-    const chatId = Number(params[0]);
-    const chat = db.chats.find(c => c.id === chatId);
-    if (!chat || chat.type !== 'group') fail(400, 'Это не группа');
-    if (chat.created_by !== me.id) fail(403, 'Добавлять может только создатель');
-    const ids = [...new Set((body?.user_ids || []).map(Number))].filter(id => db.users.some(u => u.id === id));
-    if (!ids.length) fail(400, 'Некого добавлять');
-    let added = 0;
-    for (const id of ids) {
-      if (!db.members.some(m => m.chat_id === chatId && m.user_id === id)) {
-        db.members.push({ chat_id: chatId, user_id: id, last_read_message_id: 0 });
-        added++;
-      }
-    }
-    save();
-    emit('chat:new', { chat_id: chatId });
-    emit('chat:updated', { chat_id: chatId, members: true });
-    return { ok: true, added };
-  });
-
-  route('POST', /^\/api\/chats\/(\d+)\/leave$/, ({ me, params }) => {
-    me = requireUser(me);
-    const chatId = Number(params[0]);
-    const chat = db.chats.find(c => c.id === chatId);
-    if (!chat || chat.type !== 'group') fail(400, 'Это не группа');
-    if (chat.created_by === me.id) fail(400, 'Создатель не может выйти из группы');
-    db.members = db.members.filter(m => !(m.chat_id === chatId && m.user_id === me.id));
-    save();
-    emit('chat:updated', { chat_id: chatId, members: true });
     return { ok: true };
   });
 
@@ -1100,11 +909,11 @@
     return { trends: [...counts.entries()].map(([tag, count]) => ({ tag, count })).sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag)).slice(0, limit) };
   });
 
-  /* Floop в офлайне: честные заготовки без нейросети */
+  /* BLOOP AI в офлайне: честные заготовки без нейросети */
   function assistantFallback(question) {
     const q = String(question || '').toLowerCase();
     if (/привет|здравств|хай|hello/.test(q)) {
-      return 'Привет! Я Floop — помощник BLOOP. Сейчас я в офлайн-режиме (без нейросети), но идеями постов, хэштегами и советами для Вирусометра помогу. Спрашивай!';
+      return 'Привет! Я BLOOP AI — помощник BLOOP. Сейчас я в офлайн-режиме (без нейросети), но идеями постов, хэштегами и советами для Вирусометра помогу. Спрашивай!';
     }
     if (/что (ты )?умеешь|помощь|help|умеешь/.test(q)) {
       return 'В офлайн-режиме я умею: подсказывать идеи постов, подписи к фото и хэштеги, объяснять Вирусометр и помогать с клипами и голосовыми.';
@@ -1126,9 +935,34 @@
     return 'Я в офлайн-режиме этого устройства. Спроси про идеи постов, подписи, хэштеги или Вирусометр — с этим помогу и без сети.';
   }
 
+  /* Контекст для BLOOP AI в офлайне: посты и теги этого устройства. */
+  function bloopAiContext() {
+    const ctx = {};
+    try {
+      const texts = (db.posts || []).map(p => String(p.text || '')).filter(t => t.trim().length > 12).slice(-60);
+      ctx.texts = texts;
+      const tags = {};
+      for (const t of texts) {
+        for (const m of String(t).match(/#[\wа-яё]+/gi) || []) {
+          const key = m.toLowerCase();
+          tags[key] = (tags[key] || 0) + 1;
+        }
+      }
+      ctx.tags = Object.entries(tags).sort((a, b) => b[1] - a[1]).slice(0, 8).map(e => e[0]);
+    } catch { /* пустой контекст — отвечу и так */ }
+    return ctx;
+  }
+
   route('POST', /^\/api\/assistant$/, ({ body }) => {
     const history = Array.isArray(body?.messages) ? body.messages.slice(-20) : [];
     const last = [...history].reverse().find(m => m?.role === 'user');
+    if (window.BLOOP_AI) {
+      try {
+        const inst = window.BLOOP_AI.inst || (window.BLOOP_AI.inst = window.BLOOP_AI.createBloopAI());
+        const { reply } = inst.answer(last?.content || '', bloopAiContext());
+        return { reply, source: 'ai' };
+      } catch { /* ниже — текстовый fallback */ }
+    }
     return { reply: assistantFallback(last?.content), source: 'fallback' };
   });
 

@@ -7,6 +7,18 @@ const token = () => localStorage.getItem('bloop_token') || '';
 /* Локальный режим (Android APK): «сервер» работает внутри приложения.
    Включается конфигом window.BLOOP_CONFIG.mode === 'local' или ?local=1 для отладки. */
 const LOCAL_MODE = window.BLOOP_CONFIG?.mode === 'local' || location.search.includes('local=1');
+// Режим «друзья на общем сервере»: в автономном APK можно подключиться к
+// серверу друга/компьютера — тогда вы видите друг друга, чаты и звонки.
+(() => {
+  try {
+    const fromQuery = new URLSearchParams(location.search).get('server');
+    if (fromQuery) localStorage.setItem('bloop_remote_server', fromQuery.replace(/\/+$/, ''));
+    if (LOCAL_MODE) {
+      const srv = localStorage.getItem('bloop_remote_server');
+      if (srv) { location.replace(srv + '/'); return; }
+    }
+  } catch (e) { console.warn('server redirect', e); }
+})();
 const localServer = () => window.__BLOOP_LOCAL__;
 
 let me = null;
@@ -2848,7 +2860,64 @@ document.querySelectorAll('#theme-seg button').forEach(b =>
     localStorage.setItem('bloop_theme', b.dataset.theme);
     applyTheme();
   }));
-$('#btn-settings').addEventListener('click', openSettings);
+$('#btn-settings').addEventListener('click', () => { openSettings(); ensureServerSection(); });
+
+// ---------- «Сервер для друзей» (мультиплеер) ----------
+function ensureServerSection() {
+  const modal = document.querySelector('#settings-modal .settings-card');
+  if (!modal || $('#srv-section')) return;
+  const isNative = !!(window.Capacitor?.isNativePlatform?.());
+  if (!LOCAL_MODE && !isNative) return; // в браузере на сервере не нужно
+  const sec = document.createElement('div');
+  sec.id = 'srv-section';
+  const withTimeout = (ms) => {
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const t = setTimeout(() => ctrl && ctrl.abort(), ms);
+    return { signal: ctrl && ctrl.signal, done: () => clearTimeout(t) };
+  };
+  if (LOCAL_MODE) {
+    sec.innerHTML = `
+      <h3><span>Сервер для друзей 🌐</span></h3>
+      <div class="set-hint">В автономном режиме каждый телефон — отдельный «остров». Чтобы видеть друга: один из вас запускает BLOOP-сервер (run-server.bat, нужен Node.js) и говорит адрес — введи его здесь. Подойдёт общий Wi-Fi (http://192.168.x.x:3000) или адрес в интернете.</div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <input id="srv-url" type="url" inputmode="url" placeholder="http://192.168.1.5:3000" autocomplete="off" style="flex:1;min-width:0">
+        <button id="srv-connect" class="btn">Подключиться</button>
+      </div>
+      <div class="set-hint" id="srv-status"></div>`;
+    modal.appendChild(sec);
+    $('#srv-connect').addEventListener('click', async () => {
+      const url = ($('#srv-url').value || '').trim().replace(/\/+$/, '');
+      const st = $('#srv-status');
+      if (!/^https?:\/\/.+/i.test(url)) { st.textContent = 'Адрес должен начинаться с http:// или https://'; return; }
+      st.textContent = 'Проверяю связь…';
+      const to = withTimeout(7000);
+      try {
+        const r = await fetch(url + '/api/health', { signal: to.signal });
+        const j = await r.json();
+        to.done();
+        if (!j.ok) throw new Error('not-bloop');
+        localStorage.setItem('bloop_remote_server', url);
+        st.textContent = `Готово! Подключаюсь к серверу — там ${j.users} пользоват.`;
+        setTimeout(() => { location.href = url + '/'; }, 700);
+      } catch {
+        to.done();
+        st.textContent = 'Сервер не отвечает. Проверь адрес, что вы в одной Wi-Fi сети и что BLOOP-сервер запущен (run-server.bat).';
+      }
+    });
+  } else {
+    sec.innerHTML = `
+      <h3><span>Автономный режим 📴</span></h3>
+      <div class="set-hint">Сейчас BLOOP подключён к серверу — там друзья, чаты и звонки. Хочешь вернуться в автономный режим (всё хранится на этом телефоне)?</div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button id="srv-disconnect" class="btn">Отключиться от сервера</button>
+      </div>`;
+    modal.appendChild(sec);
+    $('#srv-disconnect').addEventListener('click', () => {
+      try { localStorage.removeItem('bloop_remote_server'); } catch { /* не критично */ }
+      location.href = 'https://localhost/index.html';
+    });
+  }
+}
 $('#settings-close').addEventListener('click', () => $('#settings-modal').classList.add('hidden'));
 $('#settings-modal').addEventListener('click', (e) => {
   if (e.target === $('#settings-modal')) $('#settings-modal').classList.add('hidden');

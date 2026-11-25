@@ -823,7 +823,32 @@ var BLOOP_AI = (() => {
     "\u043A\u043E\u0433\u0434\u0430",
     "\u0447\u0442\u043E\u0431\u044B",
     "\u0447\u0442\u043E",
-    "\u0442\u0430\u043A\u043E\u0439"
+    "\u0442\u0430\u043A\u043E\u0439",
+    "\u0441\u0434\u0435\u043B\u0430",
+    "\u0441\u0434\u0435\u043B\u0430\u0442\u044C",
+    "\u0441\u0434\u0435\u043B\u0430\u043B",
+    "\u0441\u0434\u0435\u043B\u0430\u043B\u0438",
+    "\u0440\u0430\u0431\u043E\u0442\u0430",
+    "\u0440\u0430\u0431\u043E\u0442\u0430\u0435\u0442",
+    "\u043D\u0443\u0436\u043D\u043E",
+    "\u043D\u0443\u0436\u0435\u043D",
+    "\u043D\u0443\u0436\u043D\u0430",
+    "\u043C\u043E\u0436\u043D\u043E",
+    "\u043D\u0435\u043B\u044C\u0437\u044F",
+    "\u0445\u043E\u0447\u0443",
+    "\u0445\u043E\u0442\u0435\u043B",
+    "\u043E\u0447\u0435\u043D\u044C",
+    "\u043F\u0440\u043E\u0441\u0442\u043E",
+    "\u043B\u0443\u0447\u0448\u0435",
+    "\u0434\u0435\u043B\u0430\u0442\u044C",
+    "\u0434\u0435\u043B\u0430\u0435\u0442",
+    "\u0434\u0435\u043B\u0430\u044E\u0442",
+    "\u0434\u0430\u0432\u0430\u0439",
+    "\u043A\u0430\u0436\u0435\u0442\u0441\u044F",
+    "\u043D\u0430\u0432\u0435\u0440\u043D\u043E\u0435",
+    "\u0432\u043E\u0437\u043C\u043E\u0436\u043D\u043E",
+    "\u0435\u0441\u0442\u044C",
+    "\u0433\u043E\u0432\u043E\u0440\u044F\u0442"
   ]);
   function stem2(w) {
     for (const suf of SUFFIXES2) {
@@ -892,11 +917,13 @@ var BLOOP_AI = (() => {
         \u0442\u043E\u043A\u0435\u043D: "token"
       };
       const qStems = /* @__PURE__ */ new Set();
+      const baseStems = /* @__PURE__ */ new Set();
       for (const raw of key.replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/)) {
         if (raw.length < 3 || STOP.has(raw) || QWORDS.has(raw)) continue;
         const st = stem2(raw);
         if (st.length >= 2) {
           qStems.add(st);
+          baseStems.add(st);
           if (SYN[st]) qStems.add(SYN[st]);
         }
       }
@@ -913,14 +940,23 @@ var BLOOP_AI = (() => {
         }
       }
       const SINGLE_MIN = 2.2;
-      const best = [...scores.entries()].filter(([, rec]) => rec.m >= 2 || rec.s >= SINGLE_MIN).sort((a, b) => b[1].s - a[1].s).slice(0, 3).map(([ci, rec]) => ({ chunk: chunks[ci], norm: rec.s / Math.max(2, qStems.size) }));
+      const best = [...scores.entries()].filter(([ci, rec]) => {
+        if (!(rec.m >= 2 || rec.s >= SINGLE_MIN)) return false;
+        const covered = rec.m >= baseStems.size ? 1 : rec.m / baseStems.size;
+        if (qStems.size >= 2 && covered < 0.75) return false;
+        return true;
+      }).sort((a, b) => b[1].s - a[1].s).slice(0, 3).map(([ci, rec]) => ({
+        chunk: chunks[ci],
+        norm: rec.s / Math.max(2, qStems.size) * (chunks[ci].ty === "book" ? 0.7 : 1)
+      }));
       queryCache.set(key, best);
       return best;
     }
-    function answer(question, minNorm = 0.8) {
+    function answer(question, minNorm = 0.9) {
       const topicHit = answerTopic(question);
-      if (topicHit) return topicHit;
-      const hits = scoreQuery(question);
+      if (topicHit && topicHit !== "NO_TOPIC") return topicHit;
+      let hits = scoreQuery(question);
+      if (/^(почему|зачем)\b/i.test(question)) hits = hits.filter((h) => h.chunk.ty !== "book" && h.norm >= 2);
       if (!hits.length || hits[0].norm < minNorm) return null;
       const qStems = /* @__PURE__ */ new Set();
       for (const raw of question.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/)) {
@@ -933,6 +969,53 @@ var BLOOP_AI = (() => {
         h.norm += h.chunk.ty === "wiki" ? 0.15 : 0;
       }
       hits.sort((a, b) => b.norm - a.norm);
+      if (topicHit === "NO_TOPIC") {
+        const QW0 = /* @__PURE__ */ new Set([
+          "\u0447\u0442\u043E",
+          "\u043A\u0442\u043E",
+          "\u0442\u0430\u043A\u043E\u0435",
+          "\u0442\u0430\u043A",
+          "\u044D\u0442\u043E",
+          "\u043F\u043E\u0447\u0435\u043C\u0443",
+          "\u0437\u0430\u0447\u0435\u043C",
+          "\u0433\u0434\u0435",
+          "\u043A\u0430\u043A",
+          "\u043A\u0430\u043A\u043E\u0439",
+          "\u043A\u0430\u043A\u0430\u044F",
+          "\u043A\u0430\u043A\u0438\u0435",
+          "\u0440\u0430\u0441\u0441\u043A\u0430\u0436\u0438",
+          "\u043F\u0440\u043E",
+          "\u043E\u0431",
+          "\u043E",
+          "\u043E\u0431\u044A\u044F\u0441\u043D\u0438",
+          "\u043D\u0430\u043F\u0438\u0448\u0438",
+          "\u043C\u043D\u0435",
+          "\u043C\u043E\u0439",
+          "\u043C\u043E\u044F",
+          "\u043F\u0440\u0438\u0434\u0443\u043C\u0430\u0439",
+          "\u043F\u043E\u0434\u0431\u0435\u0440\u0438",
+          "\u043E\u0446\u0435\u043D\u0438"
+        ]);
+        const qStems0 = [];
+        for (const raw of question.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/)) {
+          if (raw.length < 3 || STOP.has(raw) || QW0.has(raw)) continue;
+          const st = stem2(raw);
+          if (st.length >= 2) qStems0.push(st);
+        }
+        const normW = (x) => x.toLowerCase().replace(/\u0301/g, "").replace(/ё/g, "\u0435");
+        const good = hits.filter((h) => {
+          const titleStems = normW(h.chunk.t).split(/[^\p{L}\p{N}]+/u).map((w) => stem2(w));
+          const defines0 = /\s—\s/.test(normW(h.chunk.s.slice(0, 140)));
+          return titleStems.length <= 2 && titleStems[0] === qStems0[0] && defines0;
+        });
+        if (good.length && good[0].norm >= 1.6) {
+          const cc = good[0].chunk;
+          const src0 = cc.ty === "wiki" ? "\u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u044F" : cc.ty === "book" ? "\u043A\u043D\u0438\u0433\u0430" : "\u043A\u043E\u0434 BLOOP";
+          return `\u{1F50E} \u0422\u043E\u0447\u043D\u043E\u0439 \u0441\u0442\u0430\u0442\u044C\u0438 \u043F\u0440\u043E \u044D\u0442\u043E \u0443 \u043C\u0435\u043D\u044F \u043F\u043E\u043A\u0430 \u043D\u0435\u0442, \u043D\u043E \u0431\u043B\u0438\u0437\u043A\u043E\u0435 \u0438\u0437 ${src0} (\xAB${cc.t}\xBB):
+\u{1F4D6} ${cc.s}`;
+        }
+        return null;
+      }
       if (hits[0].norm < minNorm) return null;
       const codeWant = /\b(код|функци|скрипт|программ|алгоритм|класс|массив|переменн|javascript|js|python|api|сервер|компонент|рефакторинг)\b/i.test(question);
       const codeHit = hits.find((h) => h.chunk.ty === "code");
@@ -972,7 +1055,17 @@ var BLOOP_AI = (() => {
         "\u043D\u0430\u043F\u0438\u0448\u0438",
         "\u043C\u043D\u0435",
         "\u043C\u043E\u0439",
-        "\u043C\u043E\u044F"
+        "\u043C\u043E\u044F",
+        "\u043F\u0440\u0438\u0434\u0443\u043C\u0430\u0439",
+        "\u043F\u043E\u0434\u0431\u0435\u0440\u0438",
+        "\u043E\u0446\u0435\u043D\u0438",
+        "\u0441\u0434\u0435\u043B\u0430\u0439",
+        "\u0441\u0433\u0435\u043D\u0435\u0440\u0438\u0440\u0443\u0439",
+        "\u0438\u0434\u0435\u044F",
+        "\u0437\u0430\u0433\u043E\u043B\u043E\u0432\u043E\u043A",
+        "\u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435",
+        "\u0441\u0442\u0438\u043B\u0435",
+        "\u0441\u0442\u0438\u043B\u044C"
       ]);
       const stems = [];
       for (const raw of key.slice(6).replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/)) {
@@ -981,31 +1074,53 @@ var BLOOP_AI = (() => {
         if (st.length >= 2) stems.push(st);
       }
       let out = null;
-      if (stems.length === 1) {
+      if (stems.length === 1 || stems.length === 2) {
         const t = stems[0];
+        const t2 = stems.length === 2 ? stems[1] : null;
+        const person = /^(кто такой|кто такая|кто такие)\b/.test(key.slice(6));
+        const norm = (s) => s.toLowerCase().replace(/\u0301/g, "").replace(/ё/g, "\u0435");
         let best = null;
         for (let i = 0; i < chunks.length; i++) {
           const c = chunks[i];
-          const titleLow = c.t.toLowerCase();
-          const headLow = c.s.slice(0, 120).toLowerCase();
-          const titleMatch = stem2(titleLow) === t || titleLow.split(/[\s«»,.—:()]+/).some((w) => stem2(w) === t);
-          const headMatch = headLow.split(/[^\p{L}\p{N}]+/u).some((w) => stem2(w) === t);
-          if (!titleMatch && !headMatch) continue;
-          const score = (titleMatch ? 2 : 1) + (c.ty === "wiki" ? 0.5 : 0);
+          const titleStems = norm(c.t).split(/[^\p{L}\p{N}]+/u).filter(Boolean).map((w) => stem2(w));
+          const textStems = norm(c.s.slice(0, 140)).split(/[^\p{L}\p{N}]+/u).filter(Boolean).map((w) => stem2(w));
+          const defines = /\s—\s/.test(norm(c.s.slice(0, 140)));
+          let score = 0;
+          const titleWords = norm(c.t).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+          if (t2) {
+            const biTitle = titleStems.some((w, idx) => w === t && titleStems[idx + 1] === t2);
+            const biText = textStems.some((w, idx) => w === t && textStems[idx + 1] === t2);
+            if (!biTitle && !biText) continue;
+            if (biTitle) score += 3;
+            if (biText) score += 1.5;
+          } else if (person) {
+            const personIntro = textStems.slice(0, 8).includes(t) && defines;
+            if (!(titleStems.includes(t) || personIntro)) continue;
+            score += 3;
+          } else {
+            if (!(titleWords.length === 1 && titleStems[0] === t)) continue;
+            if (textStems[0] === t) score += 1.5;
+            score += 3;
+          }
+          if (defines) score += 0.4;
+          if (c.ty === "wiki") score += 0.25;
           if (!best || score > best.score) best = { chunk: c, score };
         }
-        if (best) {
+        const threshold = t2 ? 3.5 : 3;
+        if (best && best.score >= threshold) {
           const c = best.chunk;
           const src = c.ty === "wiki" ? "\u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u044F" : c.ty === "book" ? "\u043A\u043D\u0438\u0433\u0430" : "\u043A\u043E\u0434 BLOOP";
           out = `\u{1F4D6} ${c.s}
 
 \u2014 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A: ${src} (\xAB${c.t}\xBB), \u0437\u043D\u0430\u043D\u0438\u044F BLOOP AI`;
+        } else {
+          out = "NO_TOPIC";
         }
       }
       queryCache.set(key, out);
       return out;
     }
-    return { answer, scoreQuery, size: chunks.length };
+    return { answer, scoreQuery, size: chunks.length, chunk: (i) => chunks[i] };
   }
 
   // src/ai/engine.js
@@ -1112,13 +1227,99 @@ var BLOOP_AI = (() => {
     function attachKnowledge(index) {
       try {
         knowledge = createKnowledge(index);
+        buildWordGate();
         return knowledge.size;
       } catch {
         knowledge = null;
         return 0;
       }
     }
+    let gateWords = null;
+    let gateStems = null;
+    function buildWordGate() {
+      try {
+        gateWords = /* @__PURE__ */ new Set([
+          "\u043F\u0440\u0438\u0432\u0435\u0442",
+          "\u043F\u043E\u043A\u0430",
+          "\u0441\u043F\u0430\u0441\u0438\u0431\u043E",
+          "\u043F\u043E\u0441\u0442",
+          "\u0445\u044D\u0448\u0442\u0435\u0433",
+          "\u043A\u043B\u0438\u043F",
+          "\u0437\u0432\u043E\u043D\u043E\u043A",
+          "\u0447\u0430\u0442",
+          "\u043B\u0435\u043D\u0442\u0430",
+          "\u0442\u0435\u043B\u0435\u0444\u043E\u043D",
+          "\u0444\u043E\u0442\u043E",
+          "\u0432\u0438\u0434\u0435\u043E",
+          "\u043C\u0443\u0437\u044B\u043A\u0430",
+          "\u0441\u043A\u0443\u0447\u043D\u043E",
+          "\u0432\u0435\u0441\u0435\u043B\u043E",
+          "\u043A\u0440\u0443\u0442\u043E",
+          "\u043A\u043B\u0430\u0441\u0441",
+          "\u0441\u0443\u043F\u0435\u0440",
+          "\u043E\u043A\u0435\u0439",
+          "\u0434\u0430\u0432\u0430\u0439",
+          "\u043A\u043E\u043D\u0435\u0447\u043D\u043E",
+          "\u043C\u043E\u0436\u043D\u043E",
+          "\u043D\u0443\u0436\u043D\u043E",
+          "\u0445\u043E\u0440\u043E\u0448\u043E",
+          "\u043E\u0442\u043B\u0438\u0447\u043D\u043E",
+          "\u0437\u0434\u043E\u0440\u043E\u0432\u043E",
+          "\u043F\u043E\u0442\u043E\u043C\u0443",
+          "\u043F\u043E\u044D\u0442\u043E\u043C\u0443",
+          "\u043A\u043E\u0442\u043E\u0440\u044B\u0439",
+          "\u043A\u043E\u0442\u043E\u0440\u044B\u0435",
+          "\u043A\u043E\u0442\u043E\u0440\u0430\u044F",
+          "\u0442\u0435\u043F\u0435\u0440\u044C",
+          "\u0442\u043E\u0433\u0434\u0430",
+          "\u0437\u0434\u0435\u0441\u044C",
+          "\u0441\u0435\u0439\u0447\u0430\u0441",
+          "\u043A\u043E\u0433\u0434\u0430",
+          "\u043C\u043E\u0436\u0435\u0442",
+          "\u043C\u043E\u0433\u0443\u0442",
+          "\u0431\u0443\u0434\u0435\u0442",
+          "\u0431\u0443\u0434\u0443\u0442",
+          "\u0437\u043D\u0430\u0435\u0448\u044C",
+          "\u0437\u043D\u0430\u044E",
+          "\u0434\u0443\u043C\u0430\u044E",
+          "\u0441\u0447\u0438\u0442\u0430\u044E",
+          "\u043D\u0440\u0430\u0432\u0438\u0442\u0441\u044F",
+          "\u0441\u043F\u0440\u043E\u0441\u0438",
+          "\u043D\u0430\u043F\u0440\u0438\u043C\u0435\u0440",
+          "\u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u044F",
+          "\u043F\u043E\u0431\u043E\u043B\u0442\u0430\u0442\u044C"
+        ]);
+        gateStems = /* @__PURE__ */ new Set();
+        const n = knowledge.size;
+        const norm = (s) => s.toLowerCase().replace(/\u0301/g, "").replace(/ё/g, "\u0435");
+        for (let i = 0; i < n; i++) {
+          const c = knowledge.chunk(i);
+          if (!c || !c.s) continue;
+          for (const w of norm(c.s).split(/[^а-я]+/)) {
+            if (w.length >= 4 && w.length <= 24) gateWords.add(w);
+          }
+        }
+        for (const w of gateWords) gateStems.add(stem(w));
+      } catch {
+        gateWords = null;
+        gateStems = null;
+      }
+    }
+    function llmWordsOk(reply) {
+      if (!gateWords) return true;
+      const words = reply.toLowerCase().replace(/\u0301/g, "").replace(/ё/g, "\u0435").split(/[^а-я]+/).filter((w) => w.length >= 4);
+      if (words.length < 2) return true;
+      let known = 0;
+      for (const w of words) {
+        if (gateWords.has(w) || gateStems.has(stem(w))) known++;
+      }
+      return known / words.length >= 0.7;
+    }
+    const QUESTIONISH = /^(что|кто|почему|зачем|где|когда|сколько|как\b|какая|какие|какой|каким|какую|чем|куда|откуда|правда|существует|бывает|как работает|что такое|кто такой|кто такая|для чего)/i;
+    const TRICKY_RE = /(смысл жизни|после смерти|есть ли бог|существует ли бог|конец света|знаменит|влюбл|любить|бывш|устал|мурлыч|выиграет|кто я|я такой|я такая|одинок|завид|зачем жить|скучно|скучать|подсказ|совет)/i;
     function looksKnowledgeable(q) {
+      if (/^(придумай|подбери|оцени|сделай|сгенерируй|идея|что написать|напиши)/i.test(q) && !/(функц|сортиров|код|программ|алгоритм|массив|перемен|база данны|api|git|html|скрипт|баг|компилятор|рекурс)/i.test(q)) return false;
+      if (/^(как|где|можно ли|почему не|зачем в)/i.test(q) && /(звонк|чат\b|бот\b|пост\b|клип\b|хэштег|аккаунт|профил|групп|подписк|уведомл|настройк|парол|тем[ауы]\b|истори|сохран|лайк|комментари|мини-апп|в bloop)/i.test(q)) return false;
       const words = q.split(/\s+/).filter((w) => w.length > 1).length;
       if (words >= 4) return true;
       if (q.includes("?") && words >= 3) return true;
@@ -1212,8 +1413,19 @@ ${tips.length ? "\u0421\u043E\u0432\u0435\u0442\u044B:\n\u2022 " + tips.join("\n
           confidence: 1
         };
       }
-      if (knowledge && looksKnowledgeable(q)) {
+      if (knowledge && !TRICKY_RE.test(q) && looksKnowledgeable(q)) {
         const k = knowledge.answer(q);
+        if (k === "NO_TOPIC") {
+          return {
+            reply: pick([
+              "\u0422\u0443\u0442 \u044F \u043F\u043E\u043A\u0430 \u043D\u0435 \u0437\u043D\u0430\u044E \u0442\u043E\u0447\u043D\u043E\u0433\u043E \u043E\u0442\u0432\u0435\u0442\u0430 \u2014 \u044F \u043C\u0430\u043B\u0435\u043D\u044C\u043A\u0430\u044F \u043E\u0444\u043B\u0430\u0439\u043D-\u043D\u0435\u0439\u0440\u043E\u0441\u0435\u0442\u044C, \u0438 \u0432\u0440\u0430\u0442\u044C \u043D\u0435 \u0431\u0443\u0434\u0443. \u0417\u0430\u0442\u043E \u0437\u043D\u0430\u044E \u043D\u0430\u0443\u043A\u0443: \u0441\u043F\u0440\u043E\u0441\u0438, \u043D\u0430\u043F\u0440\u0438\u043C\u0435\u0440, \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u0444\u043E\u0442\u043E\u0441\u0438\u043D\u0442\u0435\u0437\xBB, \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u0444\u0438\u0437\u0438\u043A\u0430\xBB \u0438\u043B\u0438 \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u043C\u0430\u0442\u0435\u043C\u0430\u0442\u0438\u043A\u0430\xBB.",
+              "\u0422\u0430\u043A\u043E\u0439 \u0441\u0442\u0430\u0442\u044C\u0438 \u0432 \u043C\u043E\u0435\u0439 \u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u0438 \u043D\u0435\u0442 \u2014 \u043E\u0442\u0432\u0435\u0447\u0430\u0442\u044C \u043D\u0430\u0443\u0433\u0430\u0434 \u043D\u0435 \u0431\u0443\u0434\u0443. \u041C\u043E\u0433\u0443 \u0440\u0430\u0441\u0441\u043A\u0430\u0437\u0430\u0442\u044C \u0438\u0437 \u0442\u043E\u0433\u043E, \u0447\u0442\u043E \u0437\u043D\u0430\u044E: \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u0444\u0438\u0437\u0438\u043A\u0430\xBB, \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u043F\u0441\u0438\u0445\u043E\u043B\u043E\u0433\u0438\u044F\xBB, \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u0431\u0430\u0437\u0430 \u0434\u0430\u043D\u043D\u044B\u0445\xBB. \u0410 \u0435\u0449\u0451 \u043F\u043E\u0431\u043E\u043B\u0442\u0430\u0442\u044C \u0438\u043B\u0438 \u043F\u0440\u0438\u0434\u0443\u043C\u0430\u0442\u044C \u043F\u043E\u0441\u0442!",
+              "\u0427\u0435\u0441\u0442\u043D\u043E: \u044D\u0442\u043E\u0433\u043E \u0432 \u043C\u043E\u0438\u0445 \u0437\u043D\u0430\u043D\u0438\u044F\u0445 \u043D\u0435\u0442. \u0421\u043F\u0440\u043E\u0441\u0438 \u043F\u0440\u043E \u043D\u0430\u0443\u043A\u0443 \u0438\u0437 \u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u0438 (\u0444\u0438\u0437\u0438\u043A\u0430, \u0431\u0438\u043E\u043B\u043E\u0433\u0438\u044F, \u0433\u0435\u043E\u043C\u0435\u0442\u0440\u0438\u044F) \u2014 \u0438\u043B\u0438 \u043F\u043E\u043F\u0440\u043E\u0441\u0438 \u043F\u0440\u0438\u0434\u0443\u043C\u0430\u0442\u044C \u043F\u043E\u0441\u0442."
+            ], rng),
+            intent: "honest",
+            confidence: 1
+          };
+        }
         if (k) return { reply: k, intent: "knowledge", confidence: 1 };
       }
       const { best, confidence } = classify(q);
@@ -1234,13 +1446,27 @@ ${tips.length ? "\u0421\u043E\u0432\u0435\u0442\u044B:\n\u2022 " + tips.join("\n
           } catch {
             llmReply = null;
           }
-          if (llmReply) {
+          if (llmReply && llmWordsOk(llmReply)) {
             reply = llmReply;
             memory.intent = "ai-neural";
+          } else if (QUESTIONISH.test(q)) {
+            reply = pick([
+              "\u0422\u0443\u0442 \u044F \u043F\u043E\u043A\u0430 \u043D\u0435 \u0437\u043D\u0430\u044E \u0442\u043E\u0447\u043D\u043E\u0433\u043E \u043E\u0442\u0432\u0435\u0442\u0430 \u2014 \u044F \u043C\u0430\u043B\u0435\u043D\u044C\u043A\u0430\u044F \u043E\u0444\u043B\u0430\u0439\u043D-\u043D\u0435\u0439\u0440\u043E\u0441\u0435\u0442\u044C, \u0438 \u0432\u0440\u0430\u0442\u044C \u043D\u0435 \u0431\u0443\u0434\u0443. \u0417\u0430\u0442\u043E \u0437\u043D\u0430\u044E \u043D\u0430\u0443\u043A\u0443: \u0441\u043F\u0440\u043E\u0441\u0438, \u043D\u0430\u043F\u0440\u0438\u043C\u0435\u0440, \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u0447\u0451\u0440\u043D\u0430\u044F \u0434\u044B\u0440\u0430\xBB, \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u0444\u043E\u0442\u043E\u0441\u0438\u043D\u0442\u0435\u0437\xBB \u0438\u043B\u0438 \xAB\u043A\u0442\u043E \u0442\u0430\u043A\u043E\u0439 \u041F\u0443\u0448\u043A\u0438\u043D\xBB.",
+              "\u0422\u0430\u043A\u043E\u0433\u043E \u0432 \u043C\u043E\u0438\u0445 \u0437\u043D\u0430\u043D\u0438\u044F\u0445 \u043D\u0435\u0442 \u2014 \u043E\u0442\u0432\u0435\u0447\u0430\u0442\u044C \u043D\u0430\u0443\u0433\u0430\u0434 \u043D\u0435 \u0431\u0443\u0434\u0443. \u041C\u043E\u0433\u0443 \u0440\u0430\u0441\u0441\u043A\u0430\u0437\u0430\u0442\u044C \u0438\u0437 \u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u0438: \u0441\u043F\u0440\u043E\u0441\u0438 \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u0433\u0440\u0430\u0432\u0438\u0442\u0430\u0446\u0438\u044F\xBB, \xAB\u0440\u0430\u0441\u0441\u043A\u0430\u0436\u0438 \u043F\u0440\u043E \u0414\u041D\u041A\xBB \u0438\u043B\u0438 \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u043A\u0432\u0430\u043D\u0442\u043E\u0432\u0430\u044F \u0444\u0438\u0437\u0438\u043A\u0430\xBB. \u0415\u0449\u0451 \u043C\u043E\u0433\u0443 \u043F\u043E\u0431\u043E\u043B\u0442\u0430\u0442\u044C, \u043F\u0440\u0438\u0434\u0443\u043C\u0430\u0442\u044C \u043F\u043E\u0441\u0442 \u0438\u043B\u0438 \u043F\u043E\u0434\u0441\u043A\u0430\u0437\u0430\u0442\u044C, \u043A\u0430\u043A \u0447\u0442\u043E-\u0442\u043E \u0441\u0434\u0435\u043B\u0430\u0442\u044C \u0432 BLOOP.",
+              "\u0427\u0435\u0441\u0442\u043D\u043E: \u043D\u0435 \u0437\u043D\u0430\u044E. \u042F \u0443\u0447\u0443\u0441\u044C \u043D\u0430 \u0434\u0438\u0430\u043B\u043E\u0433\u0430\u0445 \u0438 \u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u0438, \u043D\u043E \u043D\u0435 \u043D\u0430 \u0432\u0441\u0451\u043C. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439 \u0441\u043F\u0440\u043E\u0441\u0438\u0442\u044C \u043F\u0440\u043E \u043D\u0430\u0443\u043A\u0443 \u0438\u043B\u0438 \u0438\u0437\u0432\u0435\u0441\u0442\u043D\u043E\u0433\u043E \u0447\u0435\u043B\u043E\u0432\u0435\u043A\u0430 \u2014 \u0438\u043B\u0438 \u043F\u043E\u043F\u0440\u043E\u0441\u0438 \u043F\u0440\u0438\u0434\u0443\u043C\u0430\u0442\u044C \u043F\u043E\u0441\u0442."
+            ], rng);
+            memory.intent = null;
           } else {
             reply = fill(pick(FALLBACK_REPLIES, rng), ctx);
             memory.intent = null;
           }
+        } else if (QUESTIONISH.test(q)) {
+          reply = pick([
+            "\u0422\u0443\u0442 \u044F \u043F\u043E\u043A\u0430 \u043D\u0435 \u0437\u043D\u0430\u044E \u0442\u043E\u0447\u043D\u043E\u0433\u043E \u043E\u0442\u0432\u0435\u0442\u0430 \u2014 \u044F \u043C\u0430\u043B\u0435\u043D\u044C\u043A\u0430\u044F \u043E\u0444\u043B\u0430\u0439\u043D-\u043D\u0435\u0439\u0440\u043E\u0441\u0435\u0442\u044C, \u0438 \u0432\u0440\u0430\u0442\u044C \u043D\u0435 \u0431\u0443\u0434\u0443. \u0417\u0430\u0442\u043E \u0437\u043D\u0430\u044E \u043D\u0430\u0443\u043A\u0443: \u0441\u043F\u0440\u043E\u0441\u0438, \u043D\u0430\u043F\u0440\u0438\u043C\u0435\u0440, \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u0447\u0451\u0440\u043D\u0430\u044F \u0434\u044B\u0440\u0430\xBB, \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u0444\u043E\u0442\u043E\u0441\u0438\u043D\u0442\u0435\u0437\xBB \u0438\u043B\u0438 \xAB\u043A\u0442\u043E \u0442\u0430\u043A\u043E\u0439 \u041F\u0443\u0448\u043A\u0438\u043D\xBB.",
+            "\u0422\u0430\u043A\u043E\u0433\u043E \u0432 \u043C\u043E\u0438\u0445 \u0437\u043D\u0430\u043D\u0438\u044F\u0445 \u043D\u0435\u0442 \u2014 \u043E\u0442\u0432\u0435\u0447\u0430\u0442\u044C \u043D\u0430\u0443\u0433\u0430\u0434 \u043D\u0435 \u0431\u0443\u0434\u0443. \u041C\u043E\u0433\u0443 \u0440\u0430\u0441\u0441\u043A\u0430\u0437\u0430\u0442\u044C \u0438\u0437 \u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u0438: \u0441\u043F\u0440\u043E\u0441\u0438 \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u0433\u0440\u0430\u0432\u0438\u0442\u0430\u0446\u0438\u044F\xBB, \xAB\u0440\u0430\u0441\u0441\u043A\u0430\u0436\u0438 \u043F\u0440\u043E \u0414\u041D\u041A\xBB \u0438\u043B\u0438 \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u043A\u0432\u0430\u043D\u0442\u043E\u0432\u0430\u044F \u0444\u0438\u0437\u0438\u043A\u0430\xBB. \u0415\u0449\u0451 \u043C\u043E\u0433\u0443 \u043F\u043E\u0431\u043E\u043B\u0442\u0430\u0442\u044C, \u043F\u0440\u0438\u0434\u0443\u043C\u0430\u0442\u044C \u043F\u043E\u0441\u0442 \u0438\u043B\u0438 \u043F\u043E\u0434\u0441\u043A\u0430\u0437\u0430\u0442\u044C, \u043A\u0430\u043A \u0447\u0442\u043E-\u0442\u043E \u0441\u0434\u0435\u043B\u0430\u0442\u044C \u0432 BLOOP.",
+            "\u0427\u0435\u0441\u0442\u043D\u043E: \u043D\u0435 \u0437\u043D\u0430\u044E. \u042F \u0443\u0447\u0443\u0441\u044C \u043D\u0430 \u0434\u0438\u0430\u043B\u043E\u0433\u0430\u0445 \u0438 \u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u0438, \u043D\u043E \u043D\u0435 \u043D\u0430 \u0432\u0441\u0451\u043C. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439 \u0441\u043F\u0440\u043E\u0441\u0438\u0442\u044C \u043F\u0440\u043E \u043D\u0430\u0443\u043A\u0443 \u0438\u043B\u0438 \u0438\u0437\u0432\u0435\u0441\u0442\u043D\u043E\u0433\u043E \u0447\u0435\u043B\u043E\u0432\u0435\u043A\u0430 \u2014 \u0438\u043B\u0438 \u043F\u043E\u043F\u0440\u043E\u0441\u0438 \u043F\u0440\u0438\u0434\u0443\u043C\u0430\u0442\u044C \u043F\u043E\u0441\u0442."
+          ], rng);
+          memory.intent = null;
         } else {
           reply = fill(pick(FALLBACK_REPLIES, rng), ctx);
           memory.intent = null;

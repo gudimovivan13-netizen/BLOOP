@@ -6,6 +6,7 @@ import { Server } from 'socket.io';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -213,6 +214,11 @@ app.post('/api/auth/email/verify', (req, res) => {
 });
 
 const api = express.Router();
+// Проверка связи для кнопки «Подключиться к серверу» в APK (без авторизации).
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true, name: 'BLOOP', users: listUsers().length, version: '4.6' });
+});
+
 api.use(authMiddleware);
 
 api.get('/me', (req, res) => res.json({ user: publicUser(req.user) }));
@@ -1030,5 +1036,17 @@ io.on('connection', (socket) => {
 });
 
 httpServer.listen(PORT, () => {
+  const ips = [];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const n of list || []) {
+      if (n.family === 'IPv4' && !n.internal) ips.push(n.address);
+    }
+  }
   console.log(`BLOOP запущен: http://localhost:${PORT}`);
+  if (ips.length) {
+    console.log('Друзья в той же Wi-Fi сети: BLOOP → Настройки → «Сервер для друзей» и ввести:');
+    for (const ip of ips) console.log(`  ► http://${ip}:${PORT}`);
+  } else {
+    console.log('Wi-Fi адрес не найден — для друзей из интернета нужен проброс порта или VPN.');
+  }
 });

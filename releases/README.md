@@ -5,8 +5,9 @@
 
 | Файл | Платформа | Размер | Что это |
 |------|-----------|--------|---------|
-| [BLOOP-4.5.exe](BLOOP-4.5.exe) | Windows 10/11 (64-bit) | 84 МБ | ИИ без белиберды: гейт качества + слой знаний + звонки |
-| [BLOOP-4.5.apk](BLOOP-4.5.apk) | Android 7.0+ | 12 МБ | ИИ без белиберды + слой знаний + демо-пользователи офлайн (versionCode 15) |
+| [BLOOP-4.6.exe](BLOOP-4.6.exe) | Windows 10/11 (64-bit) | 88 МБ | ИИ без фантазий (157 диалогов, 0% мусора) + звонки |
+| [BLOOP-server-4.6.zip](BLOOP-server-4.6.zip) | Windows/Linux/macOS | ~2 МБ | Сервер для друзей: run-server.bat + инструкция |
+| [BLOOP-4.6.apk](BLOOP-4.6.apk) | Android 7.0+ | 12 МБ | «Сервер для друзей» + ИИ без фантазий офлайн (versionCode 16) |
 
 Контрольные суммы SHA256 — в [checksums-sha256.txt](checksums-sha256.txt):
 

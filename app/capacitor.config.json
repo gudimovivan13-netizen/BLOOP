@@ -2,6 +2,9 @@
   "appId": "net.gudimov.bloop",
   "appName": "BLOOP",
   "webDir": "www",
+  "server": {
+    "allowNavigation": ["*"]
+  },
   "android": {
     "allowMixedContent": false
   }

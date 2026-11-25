@@ -5,6 +5,7 @@
 import { DIM, features, normalize, tokens } from './text.js';
 import { createNet } from './net.js';
 import * as D from './data.js';
+import { createKnowledge } from './knowledge.js';
 
 const HIDDEN = 64;
 const CONFIDENT = 0.42; // ниже — честный fallback вместо угадывания
@@ -137,6 +138,27 @@ export function createBloopAI({ seed = 42 } = {}) {
   const names = D.INTENTS.map((i) => i.name);
   const classOf = new Map(names.map((n, i) => [n, i]));
 
+  // Слой знаний: энциклопедия (~100 наук), книги, код проекта. Подключается
+  // извне (attachKnowledge) — сервером или APK; поиск офлайн.
+  let knowledge = null;
+  function attachKnowledge(index) {
+    try {
+      knowledge = createKnowledge(index);
+      return knowledge.size;
+    } catch {
+      knowledge = null;
+      return 0;
+    }
+  }
+
+  // Вопрос похож на запрос знаний: вопросительные слова, знак вопроса, длина.
+  function looksKnowledgeable(q) {
+    const words = q.split(/\s+/).filter((w) => w.length > 1).length;
+    if (words >= 4) return true;
+    if (q.includes('?') && words >= 3) return true;
+    return words >= 3 && /^(что|кто|как|почему|зачем|где|какой|какая|какие|напиши|расскажи|объясни|определи|опиши|суть|определение)/i.test(q);
+  }
+
   function buildDataset(examples) {
     return examples.map(({ text, intent }) => ({
       x: features(text),
@@ -224,6 +246,12 @@ export function createBloopAI({ seed = 42 } = {}) {
 
   function answer(question, ctx = {}) {
     const q = String(question || '').trim();
+    // Знания (статьи, книги, код) — раньше генераторов: настоящий факт
+    // ценнее шаблона, когда он есть в индексе.
+    if (knowledge && looksKnowledgeable(q)) {
+      const k = knowledge.answer(q);
+      if (k) return { reply: k, intent: 'knowledge', confidence: 1 };
+    }
     const { best, confidence } = classify(q);
     const intent = resolveIntent(q, names, { best, confidence });
     let reply;
@@ -272,6 +300,7 @@ export function createBloopAI({ seed = 42 } = {}) {
   return {
     answer,
     classify,
+    attachKnowledge,
     names,
     finalLoss,
     examplesCount: all.length,

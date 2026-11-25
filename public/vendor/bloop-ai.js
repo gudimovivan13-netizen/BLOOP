@@ -711,6 +711,244 @@ var BLOOP_AI = (() => {
     "\u0427\u0442\u043E\u0431\u044B \u0441\u0434\u0435\u043B\u0430\u0442\u044C \u0433\u0440\u0443\u043F\u043F\u0443: \u0447\u0430\u0442\u044B \u2192 \u043D\u043E\u0432\u044B\u0439 \u0447\u0430\u0442 \u2192 \u043E\u0442\u043C\u0435\u0442\u044C \u043D\u0435\u0441\u043A\u043E\u043B\u044C\u043A\u0438\u0445 \u0434\u0440\u0443\u0437\u0435\u0439. \u0423\u043F\u0440\u0430\u0432\u043B\u0435\u043D\u0438\u0435 \u0443\u0447\u0430\u0441\u0442\u043D\u0438\u043A\u0430\u043C\u0438 \u2014 \u0432 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0430\u0445 \u0447\u0430\u0442\u0430."
   ];
 
+  // src/ai/knowledge.js
+  var SUFFIXES2 = [
+    "\u0430\u043C\u0438",
+    "\u044F\u043C\u0438",
+    "\u043E\u043C\u0443",
+    "\u0435\u043C\u0443",
+    "\u043E\u0433\u043E",
+    "\u0435\u0433\u043E",
+    "\u044B\u043C\u0438",
+    "\u0438\u043C\u0438",
+    "\u0430\u0445",
+    "\u044F\u0445",
+    "\u0430\u043C",
+    "\u044F\u043C",
+    "\u0430\u044F",
+    "\u044F\u044F",
+    "\u043E\u0435",
+    "\u0435\u0435",
+    "\u044B\u0439",
+    "\u0438\u0439",
+    "\u043E\u0439",
+    "\u0435\u0439",
+    "\u044B\u043C",
+    "\u0438\u043C",
+    "\u043E\u043C",
+    "\u0435\u043C",
+    "\u0438\u0439",
+    "\u0435\u0448\u044C",
+    "\u0438\u0448\u044C",
+    "\u0435\u0442",
+    "\u044E\u0442",
+    "\u0443\u0442",
+    "\u0430\u0442",
+    "\u044F\u0442",
+    "\u0438\u0442",
+    "\u0430\u043B",
+    "\u044F\u043B",
+    "\u0435\u043B",
+    "\u0438\u043B",
+    "\u043B\u0430",
+    "\u043B\u0438",
+    "\u043B\u043E",
+    "\u0441\u044F",
+    "\u0442\u044C",
+    "\u044B",
+    "\u0438",
+    "\u0430",
+    "\u044F",
+    "\u043E",
+    "\u0435",
+    "\u0443",
+    "\u044E",
+    "\u044C",
+    "\u0439"
+  ];
+  var STOP = /* @__PURE__ */ new Set([
+    "\u0438",
+    "\u0432",
+    "\u0432\u043E",
+    "\u043D\u0435",
+    "\u043D\u0430",
+    "\u044F",
+    "\u0441",
+    "\u0441\u043E",
+    "\u043A\u0430\u043A",
+    "\u0430",
+    "\u0442\u043E",
+    "\u0432\u0441\u0435",
+    "\u043D\u043E",
+    "\u0434\u0430",
+    "\u0442\u044B",
+    "\u043A",
+    "\u0443",
+    "\u0436\u0435",
+    "\u0432\u044B",
+    "\u0437\u0430",
+    "\u0431\u044B",
+    "\u043F\u043E",
+    "\u0438\u043B\u0438",
+    "\u0435\u0441\u043B\u0438",
+    "\u0443\u0436\u0435",
+    "\u043C\u043D\u0435",
+    "\u043C\u0435\u043D\u044F",
+    "\u0442\u0435\u0431\u044F",
+    "\u043E\u043D",
+    "\u043E\u043D\u0430",
+    "\u043E\u043D\u0438",
+    "\u043E\u043D\u043E",
+    "\u044D\u0442\u043E",
+    "\u044D\u0442\u0438",
+    "\u0442\u0443\u0442",
+    "\u0442\u0430\u043C",
+    "\u0442\u0432\u043E\u0439",
+    "\u043C\u043E\u0439",
+    "\u0435\u0433\u043E",
+    "\u0435\u0435",
+    "\u0438\u0445",
+    "\u0434\u043B\u044F",
+    "\u043E\u0442",
+    "\u0434\u043E",
+    "\u0438\u0437",
+    "\u043F\u0440\u0438",
+    "\u043E\u0431",
+    "\u0431\u044B\u0442\u044C",
+    "\u0431\u044B\u043B",
+    "\u0431\u044B\u043B\u0430",
+    "\u0431\u044B\u043B\u043E",
+    "\u0431\u0443\u0434\u0435\u0442",
+    "\u0442\u0430\u043A\u0436\u0435",
+    "\u043A\u043E\u0433\u0434\u0430",
+    "\u0447\u0442\u043E\u0431\u044B",
+    "\u0447\u0442\u043E",
+    "\u0442\u0430\u043A\u043E\u0439"
+  ]);
+  function stem2(w) {
+    for (const suf of SUFFIXES2) {
+      if (w.length - suf.length >= 3 && w.endsWith(suf)) {
+        w = w.slice(0, w.length - suf.length);
+        break;
+      }
+    }
+    return w;
+  }
+  function createKnowledge(index) {
+    const chunks = index.chunks;
+    const post = index.post;
+    const N = chunks.length;
+    const idf = /* @__PURE__ */ new Map();
+    for (const t in post) idf.set(t, Math.log(N / (1 + post[t].length)));
+    const queryCache = /* @__PURE__ */ new Map();
+    function scoreQuery(q) {
+      const key = q.toLowerCase();
+      if (queryCache.has(key)) return queryCache.get(key);
+      const QWORDS = /* @__PURE__ */ new Set([
+        "\u0447\u0442\u043E",
+        "\u043A\u0442\u043E",
+        "\u043A\u0430\u043A",
+        "\u0442\u0430\u043A\u043E\u0435",
+        "\u0442\u0430\u043A",
+        "\u0442\u0430\u043A\u043E\u0439",
+        "\u044D\u0442\u043E",
+        "\u043F\u043E\u0447\u0435\u043C\u0443",
+        "\u0437\u0430\u0447\u0435\u043C",
+        "\u0433\u0434\u0435",
+        "\u043A\u0430\u043A\u043E\u0439",
+        "\u043A\u0430\u043A\u0430\u044F",
+        "\u043A\u0430\u043A\u0438\u0435",
+        "\u0440\u0430\u0441\u0441\u043A\u0430\u0436\u0438",
+        "\u043E\u0431\u044A\u044F\u0441\u043D\u0438",
+        "\u043D\u0430\u043F\u0438\u0448\u0438",
+        "\u043E\u043F\u0440\u0435\u0434\u0435\u043B\u0438",
+        "\u043E\u043F\u0438\u0448\u0438",
+        "\u0441\u0443\u0442\u044C",
+        "\u043C\u043E\u0439",
+        "\u043C\u043E\u044F",
+        "\u043C\u043D\u0435",
+        "\u043F\u0440\u043E"
+      ]);
+      const SYN = {
+        \u0444\u0443\u043D\u043A\u0446\u0438: "function",
+        \u0444\u0443\u043D\u043A\u0446: "function",
+        \u0441\u043E\u0440\u0442: "sort",
+        \u043C\u0430\u0441\u0441\u0438\u0432: "array",
+        \u043A\u043B\u0430\u0441\u0441: "class",
+        \u043F\u0435\u0440\u0435\u043C\u0435\u043D: "variable",
+        \u0441\u0435\u0440\u0432\u0435\u0440: "server",
+        \u0437\u0430\u043F\u0440\u043E\u0441: "request",
+        \u0441\u0442\u0440\u043E\u043A: "string",
+        \u0446\u0438\u043A\u043B: "loop",
+        \u0441\u043F\u0438\u0441\u043E\u043A: "list",
+        \u0444\u0430\u0439\u043B: "file",
+        \u0431\u0440\u0430\u0443\u0437\u0435\u0440: "browser",
+        \u043F\u043E\u043B\u044C\u0437: "user",
+        \u0441\u043E\u043E\u0431\u0449: "message",
+        \u0447\u0430\u0442: "chat",
+        \u043F\u043E\u0441\u0442: "post",
+        \u043A\u043D\u043E\u043F\u043A: "button",
+        \u0441\u043E\u043A\u0435\u0442: "socket",
+        \u0442\u043E\u043A\u0435\u043D: "token"
+      };
+      const qStems = /* @__PURE__ */ new Set();
+      for (const raw of key.replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/)) {
+        if (raw.length < 3 || STOP.has(raw) || QWORDS.has(raw)) continue;
+        const st = stem2(raw);
+        if (st.length >= 2) {
+          qStems.add(st);
+          if (SYN[st]) qStems.add(SYN[st]);
+        }
+      }
+      const scores = /* @__PURE__ */ new Map();
+      for (const st of qStems) {
+        const plist = post[st];
+        if (!plist) continue;
+        const w = idf.get(st) || 1;
+        for (const ci of plist) {
+          const rec = scores.get(ci) || { s: 0, m: 0 };
+          rec.s += w;
+          rec.m += 1;
+          scores.set(ci, rec);
+        }
+      }
+      const SINGLE_MIN = 2.2;
+      const best = [...scores.entries()].filter(([, rec]) => rec.m >= 2 || rec.s >= SINGLE_MIN).sort((a, b) => b[1].s - a[1].s).slice(0, 3).map(([ci, rec]) => ({ chunk: chunks[ci], norm: rec.s / Math.max(2, qStems.size) }));
+      queryCache.set(key, best);
+      return best;
+    }
+    function answer(question, minNorm = 0.8) {
+      const hits = scoreQuery(question);
+      if (!hits.length || hits[0].norm < minNorm) return null;
+      const qStems = /* @__PURE__ */ new Set();
+      for (const raw of question.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/)) {
+        if (raw.length >= 3 && !STOP.has(raw)) qStems.add(stem2(raw));
+      }
+      for (const h of hits) {
+        const titleStems = [...h.chunk.t.toLowerCase().split(/[\s«»,.—:()]+/)].filter((w) => w.length >= 3 && !STOP.has(w)).map(stem2);
+        const overlap = titleStems.filter((st) => qStems.has(st)).length;
+        h.norm += overlap * 2.5 / Math.max(1, qStems.size);
+        h.norm += h.chunk.ty === "wiki" ? 0.15 : 0;
+      }
+      hits.sort((a, b) => b.norm - a.norm);
+      if (hits[0].norm < minNorm) return null;
+      const codeWant = /\b(код|функци|скрипт|программ|алгоритм|класс|массив|переменн|javascript|js|python|api|сервер|компонент|рефакторинг)\b/i.test(question);
+      const codeHit = hits.find((h) => h.chunk.ty === "code");
+      if (codeWant && codeHit) {
+        const { chunk: chunk2 } = codeHit;
+        return `\u{1F4D6} ${chunk2.s}
+
+\u2014 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A: \u043A\u043E\u0434 BLOOP (\u0444\u0430\u0439\u043B \xAB${chunk2.t}\xBB), \u0437\u043D\u0430\u043D\u0438\u044F BLOOP AI`;
+      }
+      const { chunk } = hits[0];
+      const src = chunk.ty === "wiki" ? "\u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u044F" : chunk.ty === "book" ? "\u043A\u043D\u0438\u0433\u0430" : "\u043A\u043E\u0434 BLOOP";
+      return `\u{1F4D6} ${chunk.s}
+
+\u2014 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A: ${src} (\xAB${chunk.t}\xBB), \u0437\u043D\u0430\u043D\u0438\u044F BLOOP AI`;
+    }
+    return { answer, scoreQuery, size: chunks.length };
+  }
+
   // src/ai/engine.js
   var HIDDEN = 64;
   var CONFIDENT = 0.42;
@@ -811,6 +1049,22 @@ var BLOOP_AI = (() => {
     const rng = makeLocalRng(seed);
     const names = INTENTS.map((i) => i.name);
     const classOf = new Map(names.map((n, i) => [n, i]));
+    let knowledge = null;
+    function attachKnowledge(index) {
+      try {
+        knowledge = createKnowledge(index);
+        return knowledge.size;
+      } catch {
+        knowledge = null;
+        return 0;
+      }
+    }
+    function looksKnowledgeable(q) {
+      const words = q.split(/\s+/).filter((w) => w.length > 1).length;
+      if (words >= 4) return true;
+      if (q.includes("?") && words >= 3) return true;
+      return words >= 3 && /^(что|кто|как|почему|зачем|где|какой|какая|какие|напиши|расскажи|объясни|определи|опиши|суть|определение)/i.test(q);
+    }
     function buildDataset(examples) {
       return examples.map(({ text, intent }) => ({
         x: features(text),
@@ -892,6 +1146,10 @@ ${tips.length ? "\u0421\u043E\u0432\u0435\u0442\u044B:\n\u2022 " + tips.join("\n
     }
     function answer(question, ctx = {}) {
       const q = String(question || "").trim();
+      if (knowledge && looksKnowledgeable(q)) {
+        const k = knowledge.answer(q);
+        if (k) return { reply: k, intent: "knowledge", confidence: 1 };
+      }
       const { best, confidence } = classify(q);
       const intent = resolveIntent(q, names, { best, confidence });
       let reply;
@@ -937,6 +1195,7 @@ ${tips.length ? "\u0421\u043E\u0432\u0435\u0442\u044B:\n\u2022 " + tips.join("\n
     return {
       answer,
       classify,
+      attachKnowledge,
       names,
       finalLoss,
       examplesCount: all.length

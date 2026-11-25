@@ -632,6 +632,24 @@ api.post('/me/avatar', upload.single('file'), (req, res) => {
 
 const bloopAI = createBloopAI();
 
+// Слой знаний (статьи ~100 наук, книги, код): индекс подключается к движку
+// при старте, если public/vendor/bloop-knowledge.json на месте.
+(function attachKnowledgeIndex() {
+  const candidates = [
+    path.join(__dirname, 'public', 'vendor', 'bloop-knowledge.json'),
+    path.join(__dirname, '..', 'public', 'vendor', 'bloop-knowledge.json'),
+    path.join(__dirname, '..', '..', 'public', 'vendor', 'bloop-knowledge.json'),
+  ];
+  for (const file of candidates) {
+    try {
+      if (!fs.existsSync(file)) continue;
+      const n = bloopAI.attachKnowledge(JSON.parse(fs.readFileSync(file, 'utf8')));
+      console.log(`BLOOP AI: индекс знаний подключён (${n} фрагментов)`);
+      break;
+    } catch { /* работаем без знаний */ }
+  }
+})();
+
 // Языковая модель (GPT, ~1 млн параметров): веса читаются из public/vendor
 // один раз при первом запросе. Если файла нет (например, лёгкая сборка) —
 // работаем на классификаторе намерений.

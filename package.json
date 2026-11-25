@@ -1,6 +1,6 @@
 {
   "name": "bloop",
-  "version": "4.3.0",
+  "version": "4.4.0",
   "description": "BLOOP — соцсеть и мессенджер: лента, клипы, видео, чаты (Node.js + Express + Socket.IO + SQLite) + звонки, поиск, закрепы; сборки: APK, BLOOP.exe (SEA)",
   "main": "server.js",
   "type": "module",

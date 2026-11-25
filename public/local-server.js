@@ -973,6 +973,20 @@
     return bloopLlm;
   }
 
+  /* Индекс знаний (энциклопедия, книги, код) — подгружается один раз
+     и подключается к движку, отвечать настоящими фактами офлайн. */
+  let knowledgeTried = false;
+  function attachKnowledgeWhenReady(inst) {
+    if (knowledgeTried || !inst) return;
+    knowledgeTried = true;
+    try {
+      fetch('/vendor/bloop-knowledge.json')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((idx) => { if (idx && inst.attachKnowledge) inst.attachKnowledge(idx); })
+        .catch(() => { /* останется без знаний */ });
+    } catch { /* без знаний */ }
+  }
+
   route('POST', /^\/api\/assistant$/, ({ body }) => {
     const history = Array.isArray(body?.messages) ? body.messages.slice(-20) : [];
     const last = [...history].reverse().find(m => m?.role === 'user');
@@ -986,6 +1000,7 @@
     if (window.BLOOP_AI) {
       try {
         const inst = window.BLOOP_AI.inst || (window.BLOOP_AI.inst = window.BLOOP_AI.createBloopAI());
+        attachKnowledgeWhenReady(inst);
         const { reply } = inst.answer(last?.content || '', bloopAiContext());
         return { reply, source: 'ai' };
       } catch { /* ниже — текстовый fallback */ }

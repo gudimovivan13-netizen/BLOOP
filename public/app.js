@@ -3778,6 +3778,12 @@ async function callCreatePc(mode, stream) {
     if (pc.connectionState === 'failed') endCall('Связь потеряна');
   };
   stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+  // Применяем кандидаты, пришедшие до создания pc.
+  const queued = (activeCall && activeCall.iceQueue) || [];
+  if (activeCall) activeCall.iceQueue = [];
+  for (const cand of queued) {
+    try { pc.addIceCandidate(cand); } catch { /* устаревший кандидат */ }
+  }
   return pc;
 }
 
@@ -3845,9 +3851,9 @@ async function acceptCall() {
 function declineCall() {
   const c = activeCall;
   if (!c) return;
-  if (c.role === 'callee') {
-    socket.emit('call:decline', { to: c.peer, call_id: c.id });
-  }
+  // Отказ у вызываемого и отмена у звонящего — собеседнику одно событие,
+  // иначе он висит в «Звоним…» до таймаута.
+  try { socket.emit('call:decline', { to: c.peer, call_id: c.id }); } catch { /* сокет ушёл */ }
   teardownCall();
 }
 
@@ -3866,7 +3872,10 @@ socket.on('call:accepted', async ({ call_id } = {}) => {
 
 socket.on('call:declined', ({ call_id, busy } = {}) => {
   if (!activeCall || String(call_id) !== activeCall.id) return;
-  endCall(busy ? 'Собеседник сейчас в другом звонке' : 'Звонок отклонён');
+  const msg = busy
+    ? 'Собеседник сейчас в другом звонке'
+    : (activeCall.role === 'caller' && !activeCall.connected) ? 'Звонок отменён' : 'Звонок отклонён';
+  endCall(msg);
 });
 
 socket.on('call:ended', ({ call_id } = {}) => {
@@ -3887,8 +3896,10 @@ socket.on('call:signal', async ({ call_id, data } = {}) => {
       socket.emit('call:signal', { to: c.peer, call_id: c.id, data: { type: 'answer', sdp: answer.sdp } });
     } else if (data.type === 'answer' && c.pc) {
       await c.pc.setRemoteDescription({ type: 'answer', sdp: data.sdp });
-    } else if (data.type === 'ice' && data.candidate && c.pc) {
-      await c.pc.addIceCandidate(data.candidate);
+    } else if (data.type === 'ice' && data.candidate) {
+      // Кандидаты могут прийти раньше pc — копим и применяем после создания.
+      if (!c.pc) (c.iceQueue = c.iceQueue || []).push(data.candidate);
+      else await c.pc.addIceCandidate(data.candidate);
     }
   } catch (err) {
     console.warn('call:signal', err);

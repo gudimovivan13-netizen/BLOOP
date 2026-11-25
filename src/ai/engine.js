@@ -244,8 +244,16 @@ export function createBloopAI({ seed = 42 } = {}) {
     return net.predict(features(question));
   }
 
-  function answer(question, ctx = {}) {
+  function answer(question, ctx = {}, opts = {}) {
     const q = String(question || '').trim();
+    // «Кто ты / как тебя зовут» — всегда про нас, знания тут не нужны.
+    if (/^(кто ты|ты кто|как тебя зовут|тебя зовут|тво[йе] имя|ты нейросеть|ты робот|ты человек|ты бот|ты живой)/i.test(q)) {
+      return {
+        reply: 'Я BLOOP AI — нейросеть, живущая прямо внутри BLOOP 🧠 Учусь на диалогах, энциклопедии (~100 наук), книгах и коде. Работаю без интернета: могу поболтать, рассказать что-то из науки или придумать пост.',
+        intent: 'about',
+        confidence: 1,
+      };
+    }
     // Знания (статьи, книги, код) — раньше генераторов: настоящий факт
     // ценнее шаблона, когда он есть в индексе.
     if (knowledge && looksKnowledgeable(q)) {
@@ -257,8 +265,31 @@ export function createBloopAI({ seed = 42 } = {}) {
     let reply;
 
     if (confidence < CONFIDENT) {
-      reply = fill(pick(D.FALLBACK_REPLIES, rng), ctx);
-      memory.intent = null;
+      // Слишком короткий вопрос без темы («что», «как») — уточняем,
+      // а не отвечаем невпопад.
+      if (q.split(/\s+/).filter((w) => w.length > 1).length < 2 && !looksKnowledgeable(q)) {
+        reply = pick([
+          'Уточни, пожалуйста, что именно тебя интересует. Например: «что такое фотосинтез» — отвечу из энциклопедии, или «придумай пост» — придумаем вместе.',
+          'Сформулируй вопрос чуть подробнее — могу рассказать что-то из энциклопедии, помочь с постом или просто поболтать.',
+          'Не совсем понял. Спроси, например: «кто такой Пушкин», «что такое квантовая физика» — или скажи, что придумать.',
+        ], rng);
+        memory.intent = null;
+      } else if (typeof opts.llm === 'function') {
+        // Открытый вопрос — шанс для трансформера; мусор режет его
+        // внутренний гейт качества, при null отвечаем запаской.
+        let llmReply = null;
+        try { llmReply = opts.llm(q); } catch { llmReply = null; }
+        if (llmReply) {
+          reply = llmReply;
+          memory.intent = 'ai-neural';
+        } else {
+          reply = fill(pick(D.FALLBACK_REPLIES, rng), ctx);
+          memory.intent = null;
+        }
+      } else {
+        reply = fill(pick(D.FALLBACK_REPLIES, rng), ctx);
+        memory.intent = null;
+      }
     } else if (intent === 'more' && memory.intent) {
       reply = retryLast(ctx);
     } else {

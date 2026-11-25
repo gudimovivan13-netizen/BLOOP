@@ -181,8 +181,43 @@ export function deleteEmailCode(email) {
   db.prepare('DELETE FROM email_codes WHERE email = ?').run(String(email).toLowerCase());
 }
 
+const DEMO_USERS = [
+  ['katya.astro', 'Катя Астрова', 'люблю звёзды, кофе и ночные съёмки ✨'],
+  ['maks.racer', 'Макс Рацер', 'машины, треки и немного философии'],
+  ['nina.paint', 'Нина Пейнт', 'рисую то, что не рассказать словами'],
+  ['olya.run', 'Оля Бегун', 'утро начинается не с кофе, а с 5 км'],
+  ['pavel.code', 'Павел Кодер', 'делаю ботов и мини-аппы в BLOOP'],
+  ['rita.wave', 'Рита Волна', 'море, сёрф и правильные закаты'],
+  ['stas.mind', 'Стас Минд', 'книги, спорт и немного психологии'],
+  ['vika.loop', 'Вика Луп', 'клипы, музыка и всё, что движется'],
+];
+
+function svgAvatar(name) {
+  const COLORS = [['#7c4dff', '#f7b731'], ['#ff6b81', '#7c4dff'], ['#00b8d4', '#7c4dff'],
+    ['#e91e63', '#ff9800'], ['#43a047', '#00e5ff'], ['#f4511e', '#ffd166'],
+    ['#5e35b1', '#ec407a'], ['#00897b', '#aed581'], ['#d32f2f', '#7c4dff'], ['#3949ab', '#00b0ff']];
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const [c1, c2] = COLORS[h % COLORS.length];
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='96' height='96'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='${c1}'/><stop offset='1' stop-color='${c2}'/></linearGradient></defs><rect width='96' height='96' rx='48' fill='url(#g)'/><text x='48' y='62' font-family='Arial, sans-serif' font-size='42' font-weight='bold' fill='#ffffff' text-anchor='middle'>${name.trim().slice(0, 1).toUpperCase()}</text></svg>`;
+  return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+}
+
+// Демо-пользователи: лента, «Люди» и чаты живые сразу после установки.
+export function seedDemoUsers() {
+  const bots = db.prepare('SELECT COUNT(*) AS n FROM users WHERE is_bot = 1').get();
+  if (bots.n > 0) return 0;
+  const ins = db.prepare(
+    "INSERT INTO users (username, display_name, password_hash, email_verified, avatar, bio, is_bot) VALUES (?, ?, '', 1, ?, ?, 1)"
+  );
+  for (const [un, dn, bio] of DEMO_USERS) ins.run(un, dn, svgAvatar(dn), bio);
+  return DEMO_USERS.length;
+}
+
 export function listUsers() {
-  return db.prepare('SELECT id, username, display_name, avatar, email_verified FROM users WHERE is_bot = 0 ORDER BY username COLLATE NOCASE').all();
+  // Включаем ботов: это «живые» демо-пользователи — без них список людей
+  // выглядит пустым, особенно на новом сервере и на телефоне.
+  return db.prepare('SELECT id, username, display_name, avatar, email_verified, is_bot FROM users ORDER BY username COLLATE NOCASE').all();
 }
 
 export function createChat({ type, name = null, createdBy, memberIds }) {

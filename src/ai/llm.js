@@ -264,6 +264,23 @@ export function createBloopLLM(data) {
     if (!reply || reply.replace(/[^\p{L}\p{N}]/gu, '').length < 2) return null;
     // аккуратные заглавные в начале предложений
     reply = reply.replace(/(^|[.!?…]\s+)([а-яёa-z])/g, (m0, p, ch) => p + ch.toUpperCase());
+    // Гейт качества: маленькая модель иногда выдаёт обрывок чужого диалога
+    // («- он покрой?», повторы слов, транслит). Такой ответ наверх не
+    // идёт — ассистент ответит знаниями, шаблоном или уточнением.
+    const words = reply.toLowerCase().split(/[\s,.!?…:;«»()\-—]+/).filter((w) => w.length > 2);
+    const freq = Object.create(null);
+    let dup = false;
+    for (const w of words) {
+      freq[w] = (freq[w] || 0) + 1;
+      if (freq[w] >= 3) { dup = true; break; }
+    }
+    const cyr = (reply.match(/[а-яё]/gi) || []).length;
+    const letters = (reply.match(/[a-zа-яё]/gi) || []).length || 1;
+    if (
+      reply.length < 10 || reply.length > 200 ||
+      /^[—\-–]/.test(reply) || reply.includes('\n') ||
+      dup || words.length < 2 || cyr < letters * 0.35
+    ) return null;
     return reply;
   }
 

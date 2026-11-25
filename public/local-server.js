@@ -38,6 +38,52 @@
   const next = (k) => ++db.seq[k];
   const now = () => new Date().toISOString().slice(0, 19).replace('T', ' ');
 
+  // Демо-пользователи (один раз): лента, «Люди» и чаты живые сразу после
+  // установки — на телефоне не нужно ждать регистрации других людей.
+  const AV_COLORS = [['#7c4dff', '#f7b731'], ['#ff6b81', '#7c4dff'], ['#00b8d4', '#7c4dff'],
+    ['#e91e63', '#ff9800'], ['#43a047', '#00e5ff'], ['#f4511e', '#ffd166'],
+    ['#5e35b1', '#ec407a'], ['#00897b', '#aed581'], ['#d32f2f', '#7c4dff'], ['#3949ab', '#00b0ff']];
+  const svgAvatar = (name) => {
+    let h = 0;
+    for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    const [c1, c2] = AV_COLORS[h % AV_COLORS.length];
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='96' height='96'>`
+      + `<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>`
+      + `<stop offset='0' stop-color='${c1}'/><stop offset='1' stop-color='${c2}'/>`
+      + `</linearGradient></defs>`
+      + `<rect width='96' height='96' rx='48' fill='url(#g)'/>`
+      + `<text x='48' y='62' font-family='Arial, sans-serif' font-size='42' font-weight='bold' fill='#ffffff' text-anchor='middle'>${name.trim().slice(0, 1).toUpperCase()}</text></svg>`;
+    return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+  };
+  const DEMO_USERS = [
+    ['katya.astro', 'Катя Астрова', 'люблю звёзды, кофе и ночные съёмки ✨'],
+    ['maks.racer', 'Макс Рацер', 'машины, треки и немного философии'],
+    ['nina.paint', 'Нина Пейнт', 'рисую то, что не рассказать словами'],
+    ['olya.run', 'Оля Бегун', 'утро начинается не с кофе, а с 5 км'],
+    ['pavel.code', 'Павел Кодер', 'делаю ботов и мини-аппы в BLOOP'],
+    ['rita.wave', 'Рита Волна', 'море, сёрф и правильные закаты'],
+    ['stas.mind', 'Стас Минд', 'книги, спорт и немного психологии'],
+    ['vika.loop', 'Вика Луп', 'клипы, музыка и всё, что движется'],
+  ];
+  if (db.users.filter((u) => u.is_bot).length === 0) {
+    for (const [un, dn, bio] of DEMO_USERS) {
+      db.users.push({
+        id: next('user'),
+        username: un,
+        display_name: dn,
+        password_hash: '',
+        phone: '',
+        email: '',
+        email_verified: 1,
+        avatar: svgAvatar(dn),
+        bio,
+        is_bot: 1,
+        created_at: now(),
+      });
+    }
+    save();
+  }
+
   /* ---------- медиа (IndexedDB, blob: URL) ---------- */
 
   let idb = null;
@@ -443,7 +489,8 @@
   route('GET', /^\/api\/users$/, ({ me }) => {
     requireUser(me);
     // локальный мир: считаем всех «онлайн» — это одна локальная копия BLOOP
-    return { users: db.users.filter(u => !u.is_bot).map(u => ({ ...publicUser(u), online: true })) };
+    // Показываем и демо-пользователей: «Люди» на телефоне не пустует.
+    return { users: db.users.map((u) => ({ ...publicUser(u), online: true })) };
   });
 
   route('POST', /^\/api\/chats$/, async ({ me, body }) => {
@@ -990,19 +1037,15 @@
   route('POST', /^\/api\/assistant$/, ({ body }) => {
     const history = Array.isArray(body?.messages) ? body.messages.slice(-20) : [];
     const last = [...history].reverse().find(m => m?.role === 'user');
-    const llm = getBloopLlm();
-    if (llm) {
-      try {
-        const reply = llm.chat(last?.content || '', history.slice(-6));
-        if (reply) return { reply, source: 'ai-neural' };
-      } catch { /* ниже классификатор */ }
-    }
     if (window.BLOOP_AI) {
       try {
         const inst = window.BLOOP_AI.inst || (window.BLOOP_AI.inst = window.BLOOP_AI.createBloopAI());
         attachKnowledgeWhenReady(inst);
-        const { reply } = inst.answer(last?.content || '', bloopAiContext());
-        return { reply, source: 'ai' };
+        const llm = getBloopLlm();
+        const { reply, intent } = inst.answer(last?.content || '', bloopAiContext(), {
+          llm: llm ? (q) => llm.chat(q, history.slice(-6)) : null,
+        });
+        return { reply, source: intent === 'ai-neural' ? 'ai-neural' : intent === 'knowledge' ? 'knowledge' : 'ai' };
       } catch { /* ниже — текстовый fallback */ }
     }
     return { reply: assistantFallback(last?.content), source: 'fallback' };

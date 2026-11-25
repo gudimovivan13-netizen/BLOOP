@@ -9,7 +9,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import {
-  db, getUserById, getUserWithPassword, listUsers,
+  db, getUserById, getUserWithPassword, listUsers, seedDemoUsers,
   createChat, findDirectChat, isMember, chatMemberIds,
   insertMessage, listMessages, listChatsForUser, markRead,
   createPost, getPost, listFeed, listUserPosts, deletePost,
@@ -630,6 +630,12 @@ api.post('/me/avatar', upload.single('file'), (req, res) => {
 // в памяти процесса; генераторы используют данные самой соцсети
 // (посты, теги, тренды). Никаких внешних API — ни один байт не уходит наружу.
 
+// Демо-пользователи (один раз): «Люди» и лента не пустуют на свежем сервере.
+try {
+  const seeded = seedDemoUsers();
+  if (seeded) console.log(`BLOOP: создано демо-пользователей: ${seeded}`);
+} catch { /* не критично */ }
+
 const bloopAI = createBloopAI();
 
 // Слой знаний (статьи ~100 наук, книги, код): индекс подключается к движку
@@ -704,17 +710,20 @@ api.post('/assistant', (req, res) => {
   })).filter(m => m.content);
   if (history.length === 0) return fail(res, 400, 'Нет сообщений');
   const lastUser = [...history].reverse().find(m => m.role === 'user');
-  // 1) языковая модель (настоящий трансформер) — если веса на месте;
+  // Движок маршрутизирует сам: знания → шаблоны → нейросеть (с гейтом
+  // качества) → fallback. Мусорная генерация до пользователя не доходит.
   const llm = getBloopLLM();
-  if (llm) {
-    const reply = llm.chat(lastUser?.content || '', history.slice(-6));
-    if (reply) {
-      return res.json({ reply, source: 'ai-neural', intent: 'llm', model: 'bloop-gpt-1' });
-    }
-  }
-  // 2) классификатор намерений + генераторы — запасной путь
-  const { reply, intent, confidence } = bloopAI.answer(lastUser?.content || '', aiContext(req.user.id));
-  res.json({ reply, source: 'ai', intent, confidence: Math.round(confidence * 100) / 100 });
+  const { reply, intent, confidence } = bloopAI.answer(lastUser?.content || '', aiContext(req.user.id), {
+    llm: llm ? (q) => llm.chat(q, history.slice(-6)) : null,
+  });
+  const source = intent === 'ai-neural' ? 'ai-neural' : intent === 'knowledge' ? 'knowledge' : 'ai';
+  res.json({
+    reply,
+    intent,
+    source,
+    confidence: Math.round(confidence * 100) / 100,
+    model: intent === 'ai-neural' ? 'bloop-gpt-1' : undefined,
+  });
 });
 
 

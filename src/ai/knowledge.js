@@ -85,6 +85,11 @@ export function createKnowledge(index) {
 
   // Возвращает лучший ответ или null (нет уверенного совпадения).
   function answer(question, minNorm = 0.8) {
+    // Одиночная тема («что такое физика», «расскажи про ДНК»): отвечаем
+    // только фрагментом, где тема в заголовке или в первых словах текста —
+    // иначе побеждают случайные биографии со словом «физик».
+    const topicHit = answerTopic(question);
+    if (topicHit) return topicHit;
     const hits = scoreQuery(question);
     if (!hits.length || hits[0].norm < minNorm) return null;
     // Бонус за совпадение стемов запроса с заголовком: статья «Гравитация»
@@ -113,6 +118,44 @@ export function createKnowledge(index) {
     const { chunk } = hits[0];
     const src = chunk.ty === 'wiki' ? 'энциклопедия' : chunk.ty === 'book' ? 'книга' : 'код BLOOP';
     return `📖 ${chunk.s}\n\n— источник: ${src} («${chunk.t}»), знания BLOOP AI`;
+  }
+
+  // Точечный ответ по одной теме: стем темы ищем в заголовке фрагмента
+  // или в начале текста (там энциклопедия определяет понятие).
+  function answerTopic(question) {
+    const key = 'topic:' + question.toLowerCase();
+    if (queryCache.has(key)) return queryCache.get(key);
+    const QW = new Set(['что', 'кто', 'такое', 'так', 'это', 'почему', 'зачем',
+      'где', 'как', 'какой', 'какая', 'какие', 'расскажи', 'про', 'об',
+      'о', 'объясни', 'напиши', 'мне', 'мой', 'моя']);
+    const stems = [];
+    for (const raw of key.slice(6).replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/)) {
+      if (raw.length < 3 || STOP.has(raw) || QW.has(raw)) continue;
+      const st = stem(raw);
+      if (st.length >= 2) stems.push(st);
+    }
+    let out = null;
+    if (stems.length === 1) {
+      const t = stems[0];
+      let best = null;
+      for (let i = 0; i < chunks.length; i++) {
+        const c = chunks[i];
+        const titleLow = c.t.toLowerCase();
+        const headLow = c.s.slice(0, 120).toLowerCase();
+        const titleMatch = stem(titleLow) === t || titleLow.split(/[\s«»,.—:()]+/).some((w) => stem(w) === t);
+        const headMatch = headLow.split(/[^\p{L}\p{N}]+/u).some((w) => stem(w) === t);
+        if (!titleMatch && !headMatch) continue;
+        const score = (titleMatch ? 2 : 1) + (c.ty === 'wiki' ? 0.5 : 0);
+        if (!best || score > best.score) best = { chunk: c, score };
+      }
+      if (best) {
+        const c = best.chunk;
+        const src = c.ty === 'wiki' ? 'энциклопедия' : c.ty === 'book' ? 'книга' : 'код BLOOP';
+        out = `📖 ${c.s}\n\n— источник: ${src} («${c.t}»), знания BLOOP AI`;
+      }
+    }
+    queryCache.set(key, out);
+    return out;
   }
 
   return { answer, scoreQuery, size: chunks.length };

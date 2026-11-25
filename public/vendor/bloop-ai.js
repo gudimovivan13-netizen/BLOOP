@@ -918,6 +918,8 @@ var BLOOP_AI = (() => {
       return best;
     }
     function answer(question, minNorm = 0.8) {
+      const topicHit = answerTopic(question);
+      if (topicHit) return topicHit;
       const hits = scoreQuery(question);
       if (!hits.length || hits[0].norm < minNorm) return null;
       const qStems = /* @__PURE__ */ new Set();
@@ -945,6 +947,63 @@ var BLOOP_AI = (() => {
       return `\u{1F4D6} ${chunk.s}
 
 \u2014 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A: ${src} (\xAB${chunk.t}\xBB), \u0437\u043D\u0430\u043D\u0438\u044F BLOOP AI`;
+    }
+    function answerTopic(question) {
+      const key = "topic:" + question.toLowerCase();
+      if (queryCache.has(key)) return queryCache.get(key);
+      const QW = /* @__PURE__ */ new Set([
+        "\u0447\u0442\u043E",
+        "\u043A\u0442\u043E",
+        "\u0442\u0430\u043A\u043E\u0435",
+        "\u0442\u0430\u043A",
+        "\u044D\u0442\u043E",
+        "\u043F\u043E\u0447\u0435\u043C\u0443",
+        "\u0437\u0430\u0447\u0435\u043C",
+        "\u0433\u0434\u0435",
+        "\u043A\u0430\u043A",
+        "\u043A\u0430\u043A\u043E\u0439",
+        "\u043A\u0430\u043A\u0430\u044F",
+        "\u043A\u0430\u043A\u0438\u0435",
+        "\u0440\u0430\u0441\u0441\u043A\u0430\u0436\u0438",
+        "\u043F\u0440\u043E",
+        "\u043E\u0431",
+        "\u043E",
+        "\u043E\u0431\u044A\u044F\u0441\u043D\u0438",
+        "\u043D\u0430\u043F\u0438\u0448\u0438",
+        "\u043C\u043D\u0435",
+        "\u043C\u043E\u0439",
+        "\u043C\u043E\u044F"
+      ]);
+      const stems = [];
+      for (const raw of key.slice(6).replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/)) {
+        if (raw.length < 3 || STOP.has(raw) || QW.has(raw)) continue;
+        const st = stem2(raw);
+        if (st.length >= 2) stems.push(st);
+      }
+      let out = null;
+      if (stems.length === 1) {
+        const t = stems[0];
+        let best = null;
+        for (let i = 0; i < chunks.length; i++) {
+          const c = chunks[i];
+          const titleLow = c.t.toLowerCase();
+          const headLow = c.s.slice(0, 120).toLowerCase();
+          const titleMatch = stem2(titleLow) === t || titleLow.split(/[\s«»,.—:()]+/).some((w) => stem2(w) === t);
+          const headMatch = headLow.split(/[^\p{L}\p{N}]+/u).some((w) => stem2(w) === t);
+          if (!titleMatch && !headMatch) continue;
+          const score = (titleMatch ? 2 : 1) + (c.ty === "wiki" ? 0.5 : 0);
+          if (!best || score > best.score) best = { chunk: c, score };
+        }
+        if (best) {
+          const c = best.chunk;
+          const src = c.ty === "wiki" ? "\u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u044F" : c.ty === "book" ? "\u043A\u043D\u0438\u0433\u0430" : "\u043A\u043E\u0434 BLOOP";
+          out = `\u{1F4D6} ${c.s}
+
+\u2014 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A: ${src} (\xAB${c.t}\xBB), \u0437\u043D\u0430\u043D\u0438\u044F BLOOP AI`;
+        }
+      }
+      queryCache.set(key, out);
+      return out;
     }
     return { answer, scoreQuery, size: chunks.length };
   }
@@ -1144,8 +1203,15 @@ ${tips.length ? "\u0421\u043E\u0432\u0435\u0442\u044B:\n\u2022 " + tips.join("\n
     function classify(question) {
       return net.predict(features(question));
     }
-    function answer(question, ctx = {}) {
+    function answer(question, ctx = {}, opts = {}) {
       const q = String(question || "").trim();
+      if (/^(кто ты|ты кто|как тебя зовут|тебя зовут|тво[йе] имя|ты нейросеть|ты робот|ты человек|ты бот|ты живой)/i.test(q)) {
+        return {
+          reply: "\u042F BLOOP AI \u2014 \u043D\u0435\u0439\u0440\u043E\u0441\u0435\u0442\u044C, \u0436\u0438\u0432\u0443\u0449\u0430\u044F \u043F\u0440\u044F\u043C\u043E \u0432\u043D\u0443\u0442\u0440\u0438 BLOOP \u{1F9E0} \u0423\u0447\u0443\u0441\u044C \u043D\u0430 \u0434\u0438\u0430\u043B\u043E\u0433\u0430\u0445, \u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u0438 (~100 \u043D\u0430\u0443\u043A), \u043A\u043D\u0438\u0433\u0430\u0445 \u0438 \u043A\u043E\u0434\u0435. \u0420\u0430\u0431\u043E\u0442\u0430\u044E \u0431\u0435\u0437 \u0438\u043D\u0442\u0435\u0440\u043D\u0435\u0442\u0430: \u043C\u043E\u0433\u0443 \u043F\u043E\u0431\u043E\u043B\u0442\u0430\u0442\u044C, \u0440\u0430\u0441\u0441\u043A\u0430\u0437\u0430\u0442\u044C \u0447\u0442\u043E-\u0442\u043E \u0438\u0437 \u043D\u0430\u0443\u043A\u0438 \u0438\u043B\u0438 \u043F\u0440\u0438\u0434\u0443\u043C\u0430\u0442\u044C \u043F\u043E\u0441\u0442.",
+          intent: "about",
+          confidence: 1
+        };
+      }
       if (knowledge && looksKnowledgeable(q)) {
         const k = knowledge.answer(q);
         if (k) return { reply: k, intent: "knowledge", confidence: 1 };
@@ -1154,8 +1220,31 @@ ${tips.length ? "\u0421\u043E\u0432\u0435\u0442\u044B:\n\u2022 " + tips.join("\n
       const intent = resolveIntent(q, names, { best, confidence });
       let reply;
       if (confidence < CONFIDENT) {
-        reply = fill(pick(FALLBACK_REPLIES, rng), ctx);
-        memory.intent = null;
+        if (q.split(/\s+/).filter((w) => w.length > 1).length < 2 && !looksKnowledgeable(q)) {
+          reply = pick([
+            "\u0423\u0442\u043E\u0447\u043D\u0438, \u043F\u043E\u0436\u0430\u043B\u0443\u0439\u0441\u0442\u0430, \u0447\u0442\u043E \u0438\u043C\u0435\u043D\u043D\u043E \u0442\u0435\u0431\u044F \u0438\u043D\u0442\u0435\u0440\u0435\u0441\u0443\u0435\u0442. \u041D\u0430\u043F\u0440\u0438\u043C\u0435\u0440: \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u0444\u043E\u0442\u043E\u0441\u0438\u043D\u0442\u0435\u0437\xBB \u2014 \u043E\u0442\u0432\u0435\u0447\u0443 \u0438\u0437 \u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u0438, \u0438\u043B\u0438 \xAB\u043F\u0440\u0438\u0434\u0443\u043C\u0430\u0439 \u043F\u043E\u0441\u0442\xBB \u2014 \u043F\u0440\u0438\u0434\u0443\u043C\u0430\u0435\u043C \u0432\u043C\u0435\u0441\u0442\u0435.",
+            "\u0421\u0444\u043E\u0440\u043C\u0443\u043B\u0438\u0440\u0443\u0439 \u0432\u043E\u043F\u0440\u043E\u0441 \u0447\u0443\u0442\u044C \u043F\u043E\u0434\u0440\u043E\u0431\u043D\u0435\u0435 \u2014 \u043C\u043E\u0433\u0443 \u0440\u0430\u0441\u0441\u043A\u0430\u0437\u0430\u0442\u044C \u0447\u0442\u043E-\u0442\u043E \u0438\u0437 \u044D\u043D\u0446\u0438\u043A\u043B\u043E\u043F\u0435\u0434\u0438\u0438, \u043F\u043E\u043C\u043E\u0447\u044C \u0441 \u043F\u043E\u0441\u0442\u043E\u043C \u0438\u043B\u0438 \u043F\u0440\u043E\u0441\u0442\u043E \u043F\u043E\u0431\u043E\u043B\u0442\u0430\u0442\u044C.",
+            "\u041D\u0435 \u0441\u043E\u0432\u0441\u0435\u043C \u043F\u043E\u043D\u044F\u043B. \u0421\u043F\u0440\u043E\u0441\u0438, \u043D\u0430\u043F\u0440\u0438\u043C\u0435\u0440: \xAB\u043A\u0442\u043E \u0442\u0430\u043A\u043E\u0439 \u041F\u0443\u0448\u043A\u0438\u043D\xBB, \xAB\u0447\u0442\u043E \u0442\u0430\u043A\u043E\u0435 \u043A\u0432\u0430\u043D\u0442\u043E\u0432\u0430\u044F \u0444\u0438\u0437\u0438\u043A\u0430\xBB \u2014 \u0438\u043B\u0438 \u0441\u043A\u0430\u0436\u0438, \u0447\u0442\u043E \u043F\u0440\u0438\u0434\u0443\u043C\u0430\u0442\u044C."
+          ], rng);
+          memory.intent = null;
+        } else if (typeof opts.llm === "function") {
+          let llmReply = null;
+          try {
+            llmReply = opts.llm(q);
+          } catch {
+            llmReply = null;
+          }
+          if (llmReply) {
+            reply = llmReply;
+            memory.intent = "ai-neural";
+          } else {
+            reply = fill(pick(FALLBACK_REPLIES, rng), ctx);
+            memory.intent = null;
+          }
+        } else {
+          reply = fill(pick(FALLBACK_REPLIES, rng), ctx);
+          memory.intent = null;
+        }
       } else if (intent === "more" && memory.intent) {
         reply = retryLast(ctx);
       } else {

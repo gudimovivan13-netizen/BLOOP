@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Сборка BLOOP-4.6.exe — десктоп-приложение Windows (Electron + встроенный сервер).
+# Сборка BLOOP-4.7.exe — десктоп-приложение Windows (Electron + встроенный сервер).
 # Требуется: Node.js >= 22.5, npm, python3 с Pillow (для иконки).
 # Запускать из корня репозитория: bash scripts/build_exe.sh
 set -euo pipefail
@@ -33,11 +33,15 @@ print('icon.ico создан')
 PY
 fi
 
-# 4. Инструменты и сборка portable-exe (BLOOP-4.6.exe, окно Electron).
+# 4. Инструменты и сборка portable-exe (BLOOP-4.7.exe, окно Electron).
+# OOM-фикс: 7za на уровне -mx=9 съедает больше 4 ГБ памяти и убивается
+# системой, поэтому сжимаем на уровне 5 (ELECTRON_BUILDER_COMPRESSION_LEVEL
+# из app-builder-lib) — exe чуть крупнее, зато сборка проходит стабильно.
 cd "$DESK"
 if [ ! -d node_modules ]; then
   ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm install --no-audit --no-fund
 fi
-npx electron-builder --win portable
+ELECTRON_BUILDER_COMPRESSION_LEVEL=5 NODE_OPTIONS="--max-old-space-size=3072" \
+  npx electron-builder --win portable
 
-echo "Готово: $DESK/dist/BLOOP-4.6.exe"
+echo "Готово: $DESK/dist/BLOOP-4.7.exe"

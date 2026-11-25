@@ -10,7 +10,7 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import {
-  db, getUserById, getUserWithPassword, listUsers, seedDemoUsers,
+  db, getUserById, getUserWithPassword, listUsersPaged, countUsers, seedDemoUsers,
   createChat, findDirectChat, isMember, chatMemberIds,
   insertMessage, listMessages, listChatsForUser, markRead,
   createPost, getPost, listFeed, listUserPosts, deletePost,
@@ -46,7 +46,25 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 МБ после декодиров
 
 const app = express();
 const httpServer = createServer(app);
-const io = new Server(httpServer, { maxHttpBufferSize: 12 * 1024 * 1024 });
+const io = new Server(httpServer, {
+  maxHttpBufferSize: 12 * 1024 * 1024,
+  // APK и веб-клиенты на других доменах ходят к серверу напрямую (Bearer-токен,
+  // без cookie), поэтому разрешаем любой origin — секретом здесь служит токен.
+  cors: { origin: '*', methods: ['GET', 'POST'] },
+});
+
+// ---------- CORS (4.7): сервер для всех — сайта, APK и локальных страниц ----------
+
+app.use((req, res, next) => {
+  res.set({
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Max-Age': '600',
+  });
+  if (req.method === 'OPTIONS') return res.status(204).end();
+  next();
+});
 
 app.use(express.json({ limit: '16mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -116,8 +134,24 @@ function authMiddleware(req, res, next) {
 
 // ---------- маршруты API ----------
 
+// Простой лимит регистраций с одного IP: публичный сервер виден всему интернету,
+// без него боты за минуту заспамят базу миллионами аккаунтов.
+const regHits = new Map(); // ip -> [timestamp ms]
+function registerLimited(ip) {
+  const now = Date.now();
+  const hits = (regHits.get(ip) || []).filter((t) => now - t < 10 * 60 * 1000);
+  regHits.set(ip, hits);
+  if (regHits.size > 50_000) regHits.clear(); // защита самой карты от переполнения
+  hits.push(now);
+  return hits.length > 20; // не больше 20 регистраций за 10 минут с одного IP
+}
+
 // Регистрация и вход — без авторизации (поэтому до api.use(authMiddleware)).
 app.post('/api/register', (req, res) => {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '';
+  if (registerLimited(ip)) {
+    return fail(res, 429, 'Слишком много регистраций с этого адреса — попробуйте позже');
+  }
   const { username, display_name, password } = req.body || {};
   if (!/^[a-zA-Z0-9_]{3,20}$/.test(String(username || ''))) {
     return fail(res, 400, 'Логин: 3–20 символов, латиница, цифры и _');
@@ -214,18 +248,48 @@ app.post('/api/auth/email/verify', (req, res) => {
 });
 
 const api = express.Router();
-// Проверка связи для кнопки «Подключиться к серверу» в APK (без авторизации).
+// Проверка связи: автопоиск сервера в APK, кнопка «Подключиться», health-check
+// Render. Публичный маршрут — без авторизации, лёгкий (один COUNT).
+const STARTED_AT = Date.now();
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, name: 'BLOOP', users: listUsers().length, version: '4.6' });
+  res.json({
+    ok: true,
+    name: 'BLOOP',
+    version: '4.7',
+    users: countUsers(),
+    online: presence.size,
+    uptime_s: Math.round((Date.now() - STARTED_AT) / 1000),
+  });
 });
 
 api.use(authMiddleware);
 
 api.get('/me', (req, res) => res.json({ user: publicUser(req.user) }));
 
+// Список людей — страницами (4.7): пользователей может быть до миллиона,
+// поэтому полный список не отдаём никогда. Параметры:
+//   q       — поиск по логину и имени (LIKE, экранирован);
+//   limit   — 1..50 (по умолчанию 50), offset — смещение страницы;
+//   online=1 — только те, кто в сети прямо сейчас (берём из presence-карты).
 api.get('/users', (req, res) => {
-  const onlineIds = new Set(presence.keys());
-  res.json({ users: listUsers().map(u => ({ ...u, online: onlineIds.has(u.id) })) });
+  const q = String(req.query.q || '').trim().slice(0, 50);
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 50));
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  const onlineOnly = req.query.online === '1';
+
+  if (onlineOnly) {
+    // Presence-карта упорядочена по времени подключения — берём «хвост»:
+    // самые свежие подключения. Капа защищает от страницы на весь миллион.
+    const ids = [...presence.keys()];
+    const total = ids.length;
+    const page = ids.slice(Math.max(0, total - offset - limit), Math.max(0, total - offset)).reverse();
+    const rows = page.map((id) => getUserById(id)).filter(Boolean).map((u) => ({ ...u, online: true }));
+    return res.json({ users: rows, total, has_more: offset + limit < total });
+  }
+
+  const rows = listUsersPaged({ q, limit, offset }).map((u) => ({ ...u, online: presence.has(u.id) }));
+  const total = countUsers(q);
+  res.json({ users: rows, total, has_more: offset + limit < total });
 });
 
 api.get('/chats', (req, res) => res.json({ chats: listChatsForUser(req.user.id) }));
@@ -993,7 +1057,10 @@ io.on('connection', (socket) => {
   sockets.add(socket.id);
   if (sockets.size === 1) io.emit('presence', { user_id: userId, online: true });
 
-  socket.emit('presence:list', { online_ids: [...presence.keys()] });
+  // Список онлайн- id клиенту: с миллиона пользователей полная карта не влезет
+  // в каждое подключение — отдаём первые 500, остальное клиент добирает
+  // через GET /api/users?online=1.
+  socket.emit('presence:list', { online_ids: [...presence.keys()].slice(0, 500) });
 
   socket.on('typing', ({ chat_id, typing } = {}) => {
     const chatId = Number(chat_id);

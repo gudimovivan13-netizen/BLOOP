@@ -1,0 +1,28 @@
+# Render.com — публичный сервер BLOOP одним кликом.
+# 1. Залейте репозиторий на GitHub (он уже залит).
+# 2. На render.com: New → Blueprint → выберите репозиторий → Apply.
+#    (или New → Web Service и укажите те же команды вручную)
+# 3. Через минуту сервер отвечает на https://<имя-сервиса>.onrender.com/api/health
+# 4. Впишите адрес в servers.json в корне репозитория и запушьте —
+#    все приложения BLOOP (APK/веб) найдут сервер автоматически.
+services:
+  - type: web
+    name: bloop-net
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22.11.0"
+      # Данные (SQLite + загрузки) пишутся в папку data рядом с кодом.
+      # На бесплатном плане диска нет: при пересборке данные сбрасываются.
+      # Для постоянных данных добавьте платный диск и раскомментируйте:
+      # disk:
+      #   name: bloop-data
+      #   mountPath: /var/data
+      #   sizeGB: 5
+      # - key: BLOOP_DATA_DIR
+      #   value: /var/data

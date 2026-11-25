@@ -329,7 +329,8 @@ async function enterApp(user) {
   $('#auth-screen').classList.add('hidden');
   $('#app').classList.remove('hidden');
   renderMyIdentity();
-  await refreshUsers();
+  // 4.7: полный список людей не грузим (миллион пользователей не влезет) —
+  // кэш наполняется из чатов, поиска и списка «в сети».
   await refreshChats();
   loadNotifCount();
   connectSocket();
@@ -349,14 +350,20 @@ function renderMyIdentity() {
   $('#composer-avatar').replaceWith(cav);
 }
 
-async function refreshUsers() {
-  const { users } = await api('/api/users');
-  usersCache = new Map(users.map(u => [u.id, u]));
+/* Пополняем кэш людей из списка чатов (собеседники приходят в ответе /chats):
+   так имена и точки «в сети» работают без загрузки всего списка пользователей. */
+function cacheUsersFromChats() {
+  for (const c of chats) {
+    if (c.type === 'direct' && c.peer) {
+      usersCache.set(c.peer.id, { ...usersCache.get(c.peer.id), ...c.peer, online: c.peer.online || usersCache.get(c.peer.id)?.online });
+    }
+  }
 }
 
 async function refreshChats() {
   const { chats: list } = await api('/api/chats');
   chats = list;
+  cacheUsersFromChats();
   renderChatList();
   updateUnreadUi();
 }
@@ -965,42 +972,68 @@ $('#voice-cancel').addEventListener('click', () => {
 
 /* ---------- поиск людей и чаты ---------- */
 
-$('#search').addEventListener('input', async () => {
-  const q = $('#search').value.trim().toLowerCase();
+/* 4.7: людей может быть миллион — ищем на сервере (страницами), а не фильтром
+   по локальному кэшу. Дебаунс 300 мс + отмена устаревших ответов по номеру. */
+let searchSeq = 0;
+let searchTimer = null;
+
+async function runPeopleSearch(q) {
+  const seq = ++searchSeq;
   const results = $('#search-results');
-  if (!q) {
-    results.classList.add('hidden');
-    results.replaceChildren();
-    return;
-  }
   results.classList.remove('hidden');
-  await refreshUsers(); // список мог устареть — подтягиваем свежий с сервера
   results.replaceChildren();
   const label = document.createElement('div');
   label.className = 'search-label';
   label.textContent = 'Люди';
   results.appendChild(label);
-
-  const matches = [...usersCache.values()].filter(u =>
-    u.id !== me.id &&
-    (u.username.toLowerCase().includes(q) || u.display_name.toLowerCase().includes(q))
-  );
-  if (matches.length === 0) {
+  const loading = document.createElement('div');
+  loading.className = 'search-label';
+  loading.textContent = 'Ищу…';
+  results.appendChild(loading);
+  try {
+    const { users } = await api(`/api/users?q=${encodeURIComponent(q)}&limit=20`);
+    if (seq !== searchSeq) return; // пришёл ответ на устаревший запрос
+    for (const u of users) usersCache.set(u.id, { ...usersCache.get(u.id), ...u });
+    loading.remove();
+    const matches = users.filter(u => u.id !== me.id);
+    if (matches.length === 0) {
+      const none = document.createElement('div');
+      none.className = 'search-label';
+      none.textContent = 'Никого не найдено';
+      results.appendChild(none);
+    }
+    for (const u of matches) {
+      const row = document.createElement('div');
+      row.className = 'user-row';
+      row.appendChild(avatarEl(u, true));
+      const name = document.createElement('span');
+      name.textContent = `${u.display_name} (@${u.username})`;
+      row.appendChild(name);
+      row.addEventListener('click', () => startDirectChat(u));
+      results.appendChild(row);
+    }
+  } catch (err) {
+    if (seq !== searchSeq) return;
+    loading.remove();
     const none = document.createElement('div');
     none.className = 'search-label';
-    none.textContent = 'Никого не найдено';
+    none.textContent = 'Поиск не удался: ' + err.message;
     results.appendChild(none);
   }
-  for (const u of matches) {
-    const row = document.createElement('div');
-    row.className = 'user-row';
-    row.appendChild(avatarEl(u, true));
-    const name = document.createElement('span');
-    name.textContent = `${u.display_name} (@${u.username})`;
-    row.appendChild(name);
-    row.addEventListener('click', () => startDirectChat(u));
-    results.appendChild(row);
+}
+
+$('#search').addEventListener('input', () => {
+  const q = $('#search').value.trim();
+  const results = $('#search-results');
+  if (botsTab === 'bots') return; // поиск по ботам обслуживается в разделе ботов
+  if (!q) {
+    results.classList.add('hidden');
+    results.replaceChildren();
+    searchSeq++; // отменяем висящий запрос
+    return;
   }
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => runPeopleSearch(q), 300);
 });
 
 async function startDirectChat(user) {
@@ -1018,28 +1051,76 @@ async function startDirectChat(user) {
 
 /* ---------- создание группы ---------- */
 
-$('#btn-group').addEventListener('click', async () => {
-  await refreshUsers();
+/* 4.7: участников группы выбираем из серверных страниц (людей может быть
+   миллион). Выбор хранится в Map, чтобы не терялся при «Показать ещё». */
+const groupPick = { q: '', offset: 0, hasMore: false, loading: false, selected: new Map() };
+
+async function loadGroupPeople(reset = false) {
+  if (groupPick.loading) return;
+  if (reset) { groupPick.offset = 0; $('#group-users').replaceChildren(); }
+  groupPick.loading = true;
   const box = $('#group-users');
-  box.replaceChildren();
-  for (const u of usersCache.values()) {
-    if (u.id === me.id) continue;
-    const row = document.createElement('label');
-    row.className = 'group-user';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.value = u.id;
-    row.append(cb, avatarEl(u, true), Object.assign(document.createElement('span'), { textContent: `${u.display_name} (@${u.username})` }));
-    box.appendChild(row);
+  try {
+    const { users, has_more } = await api(`/api/users?q=${encodeURIComponent(groupPick.q)}&limit=30&offset=${groupPick.offset}`);
+    groupPick.offset += users.length;
+    groupPick.hasMore = !!has_more;
+    $('#group-more').classList.toggle('hidden', !groupPick.hasMore);
+    if (!users.length && reset) {
+      const none = document.createElement('div');
+      none.className = 'search-label';
+      none.textContent = 'Никого не найдено';
+      box.appendChild(none);
+    }
+    for (const u of users) {
+      if (u.id === me.id) continue;
+      usersCache.set(u.id, { ...usersCache.get(u.id), ...u });
+      const row = document.createElement('label');
+      row.className = 'group-user';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = groupPick.selected.has(u.id);
+      cb.addEventListener('change', () => {
+        if (cb.checked) groupPick.selected.set(u.id, u);
+        else groupPick.selected.delete(u.id);
+      });
+      row.append(cb, avatarEl(u, true), Object.assign(document.createElement('span'), { textContent: `${u.display_name} (@${u.username})` }));
+      box.appendChild(row);
+    }
+  } catch (err) {
+    const none = document.createElement('div');
+    none.className = 'search-label';
+    none.textContent = 'Не удалось загрузить людей: ' + err.message;
+    box.appendChild(none);
+  } finally {
+    groupPick.loading = false;
+    $('#group-more').disabled = false;
   }
+}
+
+$('#btn-group').addEventListener('click', () => {
+  groupPick.q = '';
+  groupPick.selected = new Map();
+  $('#group-search').value = '';
   $('#group-modal').classList.remove('hidden');
+  loadGroupPeople(true);
 });
+
+let groupSearchTimer = null;
+$('#group-search').addEventListener('input', () => {
+  clearTimeout(groupSearchTimer);
+  groupSearchTimer = setTimeout(() => {
+    groupPick.q = $('#group-search').value.trim();
+    loadGroupPeople(true);
+  }, 300);
+});
+
+$('#group-more').addEventListener('click', () => loadGroupPeople(false));
 
 $('#group-cancel').addEventListener('click', () => $('#group-modal').classList.add('hidden'));
 
 $('#group-create').addEventListener('click', async () => {
   const name = $('#group-name').value.trim();
-  const ids = [...$('#group-users').querySelectorAll('input:checked')].map(i => Number(i.value));
+  const ids = [...groupPick.selected.keys()];
   if (!name) { alert('Введите название группы'); return; }
   if (ids.length === 0) { alert('Выберите хотя бы одного участника'); return; }
   try {
@@ -1081,6 +1162,7 @@ async function connectSocket() {
     socket = io({ auth: { token: token() } });
   }
 
+  bindCallEvents(); // события звонков привязаны к текущему сокету
   socket.on('connect', () => {
     // после переподключения могли быть пропущены сообщения
     refreshChats();
@@ -1283,11 +1365,13 @@ let feedSideLoaded = false;
 
 async function loadFeedSide() {
   try {
-    const [{ trends }, { users }] = await Promise.all([api('/api/trends'), api('/api/users')]);
-    for (const u of users) {
-      const cached = usersCache.get(u.id);
-      if (cached) cached.online = u.online;
-    }
+    // 4.7: «в сети» просим страницей (online=1) — весь список пользователей
+    // при миллионе аккаунтов тянуть нельзя.
+    const [{ trends }, { users }] = await Promise.all([
+      api('/api/trends'),
+      api('/api/users?online=1&limit=30'),
+    ]);
+    for (const u of users) usersCache.set(u.id, { ...usersCache.get(u.id), ...u });
     renderTrends(trends);
     renderOnline(users.filter(u => u.online && u.id !== me.id));
     feedSideLoaded = true;
@@ -2878,13 +2962,34 @@ function ensureServerSection() {
   if (LOCAL_MODE) {
     sec.innerHTML = `
       <h3><span>Сервер для друзей 🌐</span></h3>
-      <div class="set-hint">В автономном режиме каждый телефон — отдельный «остров». Чтобы видеть друга: один из вас запускает BLOOP-сервер (run-server.bat, нужен Node.js) и говорит адрес — введи его здесь. Подойдёт общий Wi-Fi (http://192.168.x.x:3000) или адрес в интернете.</div>
+      <div class="set-hint">Один и тот же BLOOP стоит у всех: приложение само ищет общий сервер
+        (справочник servers.json) и подключается — там все пользователи видят друг друга.
+        Никакого отдельного файла для сети не нужно.</div>
+      <label class="check-row" style="margin-top:8px"><input id="srv-auto" type="checkbox"> Подключаться к общему серверу автоматически</label>
+      <div class="set-hint" id="srv-status"></div>
+      <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap">
+        <button id="srv-find" class="ghost-btn">Найти сервер снова</button>
+      </div>
+      <div class="set-hint" style="margin-top:10px">Свой сервер (для семьи, класса или всего интернета):
+        запустите BLOOP-сервер (run-server.bat или README «Публичный сервер за 5 минут») и введите адрес —
+        подойдёт общий Wi-Fi (http://192.168.x.x:3000) или адрес в интернете.</div>
       <div style="display:flex;gap:8px;margin-top:8px">
         <input id="srv-url" type="url" inputmode="url" placeholder="http://192.168.1.5:3000" autocomplete="off" style="flex:1;min-width:0">
         <button id="srv-connect" class="btn">Подключиться</button>
-      </div>
-      <div class="set-hint" id="srv-status"></div>`;
+      </div>`;
     modal.appendChild(sec);
+    const auto = $('#srv-auto');
+    auto.checked = (localStorage.getItem('bloop_autoconnect') || '') !== 'off';
+    auto.addEventListener('change', () => {
+      localStorage.setItem('bloop_autoconnect', auto.checked ? 'on' : 'off');
+      updateSrvStatus();
+    });
+    $('#srv-find').addEventListener('click', async () => {
+      const st = $('#srv-status');
+      st.textContent = 'Ищу общий сервер…';
+      if (window.__BLOOP_FIND_SERVER__) await window.__BLOOP_FIND_SERVER__();
+      updateSrvStatus();
+    });
     $('#srv-connect').addEventListener('click', async () => {
       const url = ($('#srv-url').value || '').trim().replace(/\/+$/, '');
       const st = $('#srv-status');
@@ -2904,19 +3009,43 @@ function ensureServerSection() {
         st.textContent = 'Сервер не отвечает. Проверь адрес, что вы в одной Wi-Fi сети и что BLOOP-сервер запущен (run-server.bat).';
       }
     });
+    // Статус автопоиска (discover.js стартует раньше app.js и пишет в __BLOOP_DISCOVERY__)
+    updateSrvStatus();
+    clearInterval(window.__srvPoll__);
+    window.__srvPoll__ = setInterval(updateSrvStatus, 700);
   } else {
     sec.innerHTML = `
       <h3><span>Автономный режим 📴</span></h3>
-      <div class="set-hint">Сейчас BLOOP подключён к серверу — там друзья, чаты и звонки. Хочешь вернуться в автономный режим (всё хранится на этом телефоне)?</div>
+      <div class="set-hint">Сейчас BLOOP подключён к серверу — там друзья, чаты и звонки. Хочешь вернуться в автономный режим (всё хранится на этом телефоне)? Автоподключение после этого отключится, чтобы телефон не тянуло обратно в сеть.</div>
       <div style="display:flex;gap:8px;margin-top:8px">
         <button id="srv-disconnect" class="btn">Отключиться от сервера</button>
       </div>`;
     modal.appendChild(sec);
     $('#srv-disconnect').addEventListener('click', () => {
-      try { localStorage.removeItem('bloop_remote_server'); } catch { /* не критично */ }
+      try {
+        localStorage.removeItem('bloop_remote_server');
+        localStorage.setItem('bloop_autoconnect', 'off'); // выход был осознанным — не тянуть обратно
+      } catch { /* не критично */ }
       location.href = 'https://localhost/index.html';
     });
   }
+}
+
+/* Живой статус автопоиска в настройках ( states: idle/searching/found/none/manual ). */
+function updateSrvStatus() {
+  const st = $('#srv-status');
+  const d = window.__BLOOP_DISCOVERY__ || {};
+  if (!st) return;
+  const auto = $('#srv-auto');
+  if (auto && !auto.checked) { st.textContent = 'Автоподключение выключено — можно ввести адрес вручную.'; return; }
+  const map = {
+    idle: 'Автопоиск запустится при следующем открытии настроек…',
+    searching: 'Ищу общий сервер (справочник servers.json)…',
+    found: `Сервер найден: ${d.server} — подключаюсь…`,
+    none: 'Общий сервер пока не найден (не развёрнут или недоступен). Работает автономный режим.',
+    manual: 'Автоподключение выключено — введите адрес вручную.',
+  };
+  st.textContent = map[d.status] || '';
 }
 $('#settings-close').addEventListener('click', () => $('#settings-modal').classList.add('hidden'));
 $('#settings-modal').addEventListener('click', (e) => {
@@ -3880,22 +4009,6 @@ async function startCall(peer, mode) {
   }, 45000);
 }
 
-// ---------- входящий звонок ----------
-socket.on('call:incoming', ({ call_id, mode, from } = {}) => {
-  if (activeCall) {
-    socket.emit('call:decline', { to: from.id, call_id, busy: true });
-    return;
-  }
-  activeCall = {
-    id: String(call_id || ''), peer: from.id, peerInfo: from,
-    mode: mode === 'video' ? 'video' : 'audio', role: 'callee',
-    pc: null, stream: null, connected: false,
-  };
-  callShowCard(from, activeCall.mode, 'Входящий звонок…');
-  callSetButtons({ accept: true, decline: true });
-  callRingStart();
-});
-
 async function acceptCall() {
   const c = activeCall;
   if (!c || c.role !== 'callee') return;
@@ -3925,6 +4038,25 @@ function declineCall() {
   try { socket.emit('call:decline', { to: c.peer, call_id: c.id }); } catch { /* сокет ушёл */ }
   teardownCall();
 }
+
+// ---------- входящий звонок ----------
+/* Биндинги событий звонка вешаются при подключении сокета (connectSocket),
+   а не при загрузке модуля: до входа пользователя socket ещё null. */
+function bindCallEvents() {
+socket.on('call:incoming', ({ call_id, mode, from } = {}) => {
+  if (activeCall) {
+    socket.emit('call:decline', { to: from.id, call_id, busy: true });
+    return;
+  }
+  activeCall = {
+    id: String(call_id || ''), peer: from.id, peerInfo: from,
+    mode: mode === 'video' ? 'video' : 'audio', role: 'callee',
+    pc: null, stream: null, connected: false,
+  };
+  callShowCard(from, activeCall.mode, 'Входящий звонок…');
+  callSetButtons({ accept: true, decline: true });
+  callRingStart();
+});
 
 // ---------- сигналинг ----------
 socket.on('call:accepted', async ({ call_id } = {}) => {
@@ -3974,6 +4106,7 @@ socket.on('call:signal', async ({ call_id, data } = {}) => {
     console.warn('call:signal', err);
   }
 });
+}
 
 // ---------- кнопки ----------
 $('#btn-call').addEventListener('click', () => {

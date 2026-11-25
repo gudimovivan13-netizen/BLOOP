@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "updated": "2026-11-25",
+  "comment": "Справочник публичных серверов BLOOP. APK при запуске скачивает этот файл (raw.githubusercontent или jsdelivr-зеркало), проверяет /api/health каждого адреса и подключается к первому живому. Добавьте свой сервер сюда — и все приложения найдут его автоматически.",
+  "servers": [
+    {
+      "url": "https://bloop-net.onrender.com",
+      "name": "BLOOP Public (Render, free)",
+      "public": true
+    }
+  ]
+}

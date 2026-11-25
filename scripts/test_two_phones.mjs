@@ -29,7 +29,7 @@ const jfetch = async (url, opts = {}) => {
 
 console.log('=== 1. Сервер доступен ===');
 const health = await jfetch('/api/health');
-ok('health: ok=true, версия 4.6', health.ok === true && health.version === '4.6', JSON.stringify(health));
+ok('health: ok=true, версия 4.7', health.ok === true && health.version === '4.7', JSON.stringify(health));
 
 console.log('=== 2. Друзья регистрируются с двух телефонов ===');
 const auth = async (username, display) => {

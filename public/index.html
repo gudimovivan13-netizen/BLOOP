@@ -305,7 +305,9 @@
     <div class="modal-card">
       <h3>Новая группа</h3>
       <input id="group-name" type="text" placeholder="Название группы" maxlength="60">
+      <input id="group-search" type="search" placeholder="Найти людей для группы…" autocomplete="off">
       <div id="group-users" class="group-users"></div>
+      <button id="group-more" class="ghost-btn hidden" style="margin-top:6px">Показать ещё</button>
       <div class="modal-actions">
         <button id="group-cancel" class="ghost-btn">Отмена</button>
         <button id="group-create" class="primary">Создать</button>
@@ -627,6 +629,7 @@
   <div id="toasts" class="toasts"></div>
 
   <script src="/config.js"></script>
+  <script src="/discover.js"></script>
   <script src="/vendor/bloop-ai.js"></script>
   <script src="/vendor/bloop-llm.js"></script>
   <script src="/local-server.js"></script>

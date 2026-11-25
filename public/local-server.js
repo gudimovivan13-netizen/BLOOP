@@ -486,11 +486,22 @@
 
   route('GET', /^\/api\/me$/, ({ me }) => ({ user: publicUser(requireUser(me)) }));
 
-  route('GET', /^\/api\/users$/, ({ me }) => {
+  route('GET', /^\/api\/users$/, ({ me, query }) => {
     requireUser(me);
-    // локальный мир: считаем всех «онлайн» — это одна локальная копия BLOOP
-    // Показываем и демо-пользователей: «Люди» на телефоне не пустует.
-    return { users: db.users.map((u) => ({ ...publicUser(u), online: true })) };
+    // 4.7: тот же контракт страниц, что и на сервере (q/limit/offset/online),
+    // чтобы клиент работал одинаково в обоих режимах. В локальном мире людей
+    // немного и все считаются «онлайн».
+    const q = String(query.q || '').trim().toLowerCase();
+    const limit = Math.min(50, Math.max(1, Number(query.limit) || 50));
+    const offset = Math.max(0, Number(query.offset) || 0);
+    let all = db.users.map((u) => ({ ...publicUser(u), online: true }));
+    if (q) {
+      all = all.filter((u) =>
+        u.username.toLowerCase().includes(q) || u.display_name.toLowerCase().includes(q));
+    }
+    const total = all.length;
+    const users = all.slice(offset, offset + limit);
+    return { users, total, has_more: offset + limit < total };
   });
 
   route('POST', /^\/api\/chats$/, async ({ me, body }) => {

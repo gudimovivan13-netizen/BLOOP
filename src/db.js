@@ -11,6 +11,7 @@ export const db = new DatabaseSync(path.join(DATA_DIR, 'bloop.db'));
 
 db.exec(`
 PRAGMA journal_mode = WAL;
+PRAGMA synchronous = NORMAL; -- с WAL это безопасно и заметно быстрее на больших записях
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS users (
@@ -218,6 +219,40 @@ export function listUsers() {
   // Включаем ботов: это «живые» демо-пользователи — без них список людей
   // выглядит пустым, особенно на новом сервере и на телефоне.
   return db.prepare('SELECT id, username, display_name, avatar, email_verified, is_bot FROM users ORDER BY username COLLATE NOCASE').all();
+}
+
+/* ---------- масштаб (4.7): миллион пользователей ---------- */
+
+/* Страница пользователей вместо всего списка: поиск (q), лимит, смещение.
+   Никогда не отдаём миллион строк одним ответом — клиент листает страницами. */
+export function listUsersPaged({ q = '', limit = 50, offset = 0 } = {}) {
+  const lim = Math.min(50, Math.max(1, Number(limit) || 50));
+  const off = Math.min(1_000_000, Math.max(0, Number(offset) || 0));
+  const term = String(q).trim();
+  if (!term) {
+    return db.prepare(`
+      SELECT id, username, display_name, avatar, email_verified, is_bot
+      FROM users ORDER BY username COLLATE NOCASE LIMIT ? OFFSET ?
+    `).all(lim, off);
+  }
+  const like = `%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+  return db.prepare(`
+    SELECT id, username, display_name, avatar, email_verified, is_bot
+    FROM users
+    WHERE username LIKE ?1 ESCAPE '\\' OR display_name LIKE ?1 ESCAPE '\\'
+    ORDER BY username COLLATE NOCASE LIMIT ?2 OFFSET ?3
+  `).all(like, lim, off);
+}
+
+/* Сколько всего пользователей подходит под запрос страницы (для has_more). */
+export function countUsers(q = '') {
+  const term = String(q).trim();
+  if (!term) return db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+  const like = `%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+  return db.prepare(`
+    SELECT COUNT(*) AS n FROM users
+    WHERE username LIKE ?1 ESCAPE '\\' OR display_name LIKE ?1 ESCAPE '\\'
+  `).get(like).n;
 }
 
 export function createChat({ type, name = null, createdBy, memberIds }) {

@@ -12,3 +12,4 @@ scripts/llm/data/
 scripts/llm/weights.npz
 scripts/llm/*.out
 scripts/llm/__pycache__/
+data-test-many
